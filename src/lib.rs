@@ -11,4 +11,5 @@ pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
-mod hopbyhop;
+pub mod hop_opt;
+pub mod routing;
