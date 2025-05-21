@@ -12,4 +12,4 @@ pub mod udp;
 pub mod vlan;
 pub mod vxlan;
 pub mod hop_opt;
-pub mod routing;
+pub mod ipv6_route;
