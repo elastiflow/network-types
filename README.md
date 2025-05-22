@@ -47,8 +47,8 @@ unsafe fn ptr_at<T>(ctx: &XdpContext, offset: usize) -> Result<*const T, ()> {
 
 fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
     let ethhdr: *const EthHdr = unsafe { ptr_at(&ctx, 0)? };
-    match unsafe { *ethhdr }.ether_type {
-        EtherType::Ipv4 => {
+    match unsafe { *ethhdr }.ether_type() {
+        Ok(EtherType::Ipv4) => {
             let ipv4hdr: *const Ipv4Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
             let source_addr = unsafe { (*ipv4hdr).src_addr() };
 
@@ -61,14 +61,14 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
                 IpProto::Udp => {
                     let udphdr: *const UdpHdr =
                         unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv4Hdr::LEN) }?;
-                    unsafe { (*udphdr).source() }
+                    unsafe { (*udphdr).src_port() }
                 }
                 _ => return Ok(xdp_action::XDP_PASS),
             };
 
             info!(&ctx, "SRC IP: {:i}, SRC PORT: {}", source_addr, source_port);
         }
-        EtherType::Ipv6 => {
+        Ok(EtherType::Ipv6) => {
             let ipv6hdr: *const Ipv6Hdr = unsafe { ptr_at(&ctx, EthHdr::LEN)? };
             let source_addr = unsafe { (*ipv6hdr).src_addr() };
 
@@ -81,7 +81,7 @@ fn try_xdp_firewall(ctx: XdpContext) -> Result<u32, ()> {
                 IpProto::Udp => {
                     let udphdr: *const UdpHdr =
                         unsafe { ptr_at(&ctx, EthHdr::LEN + Ipv6Hdr::LEN) }?;
-                    unsafe { (*udphdr).source() }
+                    unsafe { (*udphdr).src_port() }
                 }
                 _ => return Ok(xdp_action::XDP_PASS),
             };
