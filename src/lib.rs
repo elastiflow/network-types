@@ -16,3 +16,4 @@ pub mod ipv6_route;
 pub mod fragment;
 pub mod auth;
 pub mod esp;
+pub mod mobility;
