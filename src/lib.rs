@@ -7,6 +7,8 @@ pub mod bitfield;
 pub mod esp;
 pub mod eth;
 pub mod fragment;
+pub mod hip;
+pub mod hip_param;
 pub mod hop_opt;
 pub mod icmp;
 pub mod ip;
@@ -18,4 +20,6 @@ pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
+
+
 
