@@ -20,7 +20,7 @@ use core::mem;
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct Fragment {
     /// This field identifies the type of the next header.
-    pub nxt_hdr: u8,
+    pub next_hdr: u8,
     /// This is a reserved field that should be initialized to all zeros.
     pub reserved: u8,
     /// This field represents the first byte of the fragment offset.
@@ -39,14 +39,14 @@ impl Fragment {
 
     /// Gets the Next Header value.
     #[inline]
-    pub fn nxt_hdr(&self) -> u8 {
-        self.nxt_hdr
+    pub fn next_hdr(&self) -> u8 {
+        self.next_hdr
     }
 
     /// Sets the Next Header value.
     #[inline]
-    pub fn set_nxt_hdr(&mut self, nxt_hdr: u8) {
-        self.nxt_hdr = nxt_hdr;
+    pub fn set_next_hdr(&mut self, next_hdr: u8) {
+        self.next_hdr = next_hdr;
     }
 
     /// Gets the Reserved value.
@@ -164,29 +164,29 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nxt_hdr() {
+    fn test_next_hdr() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
             id: [0; 4],
         };
 
-        // Test setting and getting nxt_hdr
-        fragment.set_nxt_hdr(58); // Example: ICMPv6
-        assert_eq!(fragment.nxt_hdr(), 58);
-        assert_eq!(fragment.nxt_hdr, 58);
+        // Test setting and getting next_hdr
+        fragment.set_next_hdr(58); // Example: ICMPv6
+        assert_eq!(fragment.next_hdr(), 58);
+        assert_eq!(fragment.next_hdr, 58);
 
-        fragment.set_nxt_hdr(6); // Example: TCP
-        assert_eq!(fragment.nxt_hdr(), 6);
-        assert_eq!(fragment.nxt_hdr, 6);
+        fragment.set_next_hdr(6); // Example: TCP
+        assert_eq!(fragment.next_hdr(), 6);
+        assert_eq!(fragment.next_hdr, 6);
     }
 
     #[test]
     fn test_reserved() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -206,7 +206,7 @@ mod tests {
     #[test]
     fn test_fragment_offset() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -228,7 +228,7 @@ mod tests {
     #[test]
     fn test_reserved2() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn test_m_flag() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -268,7 +268,7 @@ mod tests {
     #[test]
     fn test_identification() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn test_combined_fields() {
         let mut fragment = Fragment {
-            nxt_hdr: 0,
+            next_hdr: 0,
             reserved: 0,
             frag_offset: 0,
             fo_res_m: 0,
@@ -294,7 +294,7 @@ mod tests {
         };
 
         // Set all fields
-        fragment.set_nxt_hdr(58); // ICMPv6
+        fragment.set_next_hdr(58); // ICMPv6
         fragment.set_reserved(123);
         fragment.set_fragment_offset(0x1ABC);
         fragment.set_reserved2(2);
@@ -302,7 +302,7 @@ mod tests {
         fragment.set_identification(0x12345678);
 
         // Verify all fields
-        assert_eq!(fragment.nxt_hdr(), 58);
+        assert_eq!(fragment.next_hdr(), 58);
         assert_eq!(fragment.reserved(), 123);
         assert_eq!(fragment.fragment_offset(), 0x1ABC);
         assert_eq!(fragment.reserved2(), 2);
@@ -325,9 +325,9 @@ mod tests {
         assert_eq!(fragment.reserved2(), 1); // Should remain unchanged
         assert_eq!(fragment.m_flag(), false);
 
-        // Test that setting nxt_hdr doesn't affect other fields
-        fragment.set_nxt_hdr(6); // TCP
-        assert_eq!(fragment.nxt_hdr(), 6);
+        // Test that setting next_hdr doesn't affect other fields
+        fragment.set_next_hdr(6); // TCP
+        assert_eq!(fragment.next_hdr(), 6);
         assert_eq!(fragment.reserved(), 123); // Should remain unchanged
         assert_eq!(fragment.fragment_offset(), 0x0DEF); // Should remain unchanged
         assert_eq!(fragment.reserved2(), 1); // Should remain unchanged
@@ -335,7 +335,7 @@ mod tests {
 
         // Test that setting reserved doesn't affect other fields
         fragment.set_reserved(255);
-        assert_eq!(fragment.nxt_hdr(), 6); // Should remain unchanged
+        assert_eq!(fragment.next_hdr(), 6); // Should remain unchanged
         assert_eq!(fragment.reserved(), 255);
         assert_eq!(fragment.fragment_offset(), 0x0DEF); // Should remain unchanged
         assert_eq!(fragment.reserved2(), 1); // Should remain unchanged

@@ -23,7 +23,7 @@ use core::{mem, ptr};
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct AuthHdr {
-    pub nxt_hdr: u8,
+    pub next_hdr: u8,
     pub payload_len: u8,
     pub reserved: [u8; 2],
     pub spi: [u8; 4],
@@ -44,13 +44,13 @@ impl AuthHdr {
     pub const LEN: usize = mem::size_of::<AuthHdr>();
 
     /// Gets the Next Header value.
-    pub fn nxt_hdr(&self) -> u8 {
-        self.nxt_hdr
+    pub fn next_hdr(&self) -> u8 {
+        self.next_hdr
     }
 
     /// Sets the Next Header value.
-    pub fn set_nxt_hdr(&mut self, nxt_hdr: u8) {
-        self.nxt_hdr = nxt_hdr;
+    pub fn set_next_hdr(&mut self, next_hdr: u8) {
+        self.next_hdr = next_hdr;
     }
 
     /// Gets the Payload Length value.
@@ -223,10 +223,10 @@ mod tests {
         let mut packet_buf = [0u8; BUF_SIZE];
         let auth_hdr = unsafe { get_mut_authhdr_ref_from_array(&mut packet_buf) };
 
-        // Test nxt_hdr
-        auth_hdr.set_nxt_hdr(6); // Example: TCP
-        assert_eq!(auth_hdr.nxt_hdr(), 6);
-        assert_eq!(auth_hdr.nxt_hdr, 6);
+        // Test next_hdr
+        auth_hdr.set_next_hdr(6); // Example: TCP
+        assert_eq!(auth_hdr.next_hdr(), 6);
+        assert_eq!(auth_hdr.next_hdr, 6);
 
         // Test payload_len
         auth_hdr.set_payload_len(4); // Example: Total length would be (4+2)*4 = 24 bytes
@@ -280,7 +280,7 @@ mod tests {
     fn test_parse_icv_when_payload_len_is_zero() {
         const PACKET_SIZE: usize = AuthHdr::LEN; // 12 bytes
         let packet_data: [u8; PACKET_SIZE] = [
-            6, 0, // nxt_hdr, payload_len = 0
+            6, 0, // next_hdr, payload_len = 0
             0, 0, // reserved
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
@@ -316,7 +316,7 @@ mod tests {
         const PACKET_SIZE: usize = 12;
         // payload_len = 3 implies a 20-byte AH header, but packet data is only 12 bytes.
         let packet_data: [u8; PACKET_SIZE] = [
-            6, 3, // nxt_hdr, payload_len = 3 (implies (3+2)*4 = 20 bytes total AH)
+            6, 3, // next_hdr, payload_len = 3 (implies (3+2)*4 = 20 bytes total AH)
             0, 0, // reserved
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
@@ -336,7 +336,7 @@ mod tests {
     fn test_parse_icv_one_chunk_exact_ah_and_packet_length() {
         const PACKET_SIZE: usize = 20; // AH is 20 bytes, ICV = 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
-            6, 3, // nxt_hdr, payload_len = 3 (total AH 20 bytes)
+            6, 3, // next_hdr, payload_len = 3 (total AH 20 bytes)
             0, 0, // reserved
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
@@ -360,7 +360,7 @@ mod tests {
     fn test_parse_icv_multiple_chunks_exact_ah_and_packet_length() {
         const PACKET_SIZE: usize = 28; // AH is 28 bytes, ICV = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
-            6, 5, // nxt_hdr, payload_len = 5 (total AH 28 bytes)
+            6, 5, // next_hdr, payload_len = 5 (total AH 28 bytes)
             0, 0, // reserved
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
@@ -386,7 +386,7 @@ mod tests {
     fn test_parse_icv_output_slice_is_too_small() {
         const PACKET_SIZE: usize = 28; // AH has 16 bytes of ICV (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
-            6, 5, // nxt_hdr, payload_len = 5 (total AH 28 bytes)
+            6, 5, // next_hdr, payload_len = 5 (total AH 28 bytes)
             0, 0, // reserved
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num

@@ -9,7 +9,7 @@ use core::{mem, ptr};
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct HopOpt{
-    pub nxt_hdr: u8,
+    pub next_hdr: u8,
     pub hdr_ext_len: u8,
     /// The first 6 bytes of the options field.
     /// If hdr_ext_len is 0, these are all the options.
@@ -31,13 +31,13 @@ impl HopOpt{
     pub const LEN: usize = mem::size_of::<HopOpt>();
 
     /// Gets the Next Header value.
-    pub fn nxt_hdr(&self) -> u8 {
-        self.nxt_hdr
+    pub fn next_hdr(&self) -> u8 {
+        self.next_hdr
     }
 
     /// Sets the Next Header value.
-    pub fn set_nxt_hdr(&mut self, nxt_hdr: u8) {
-        self.nxt_hdr = nxt_hdr;
+    pub fn set_next_hdr(&mut self, next_hdr: u8) {
+        self.next_hdr = next_hdr;
     }
 
     /// Gets the Header Extension Length value.
@@ -65,7 +65,7 @@ impl HopOpt{
     }
 
     /// Calculates the total length of the options field in bytes.
-    /// Options field = Total Header Length - 2 bytes (for nxt_hdr and hdr_ext_len).
+    /// Options field = Total Header Length - 2 bytes (for next_hdr and hdr_ext_len).
     pub fn total_opts_len(&self) -> usize {
         self.total_hdr_len().saturating_sub(2)
     }
@@ -193,9 +193,9 @@ mod tests {
         let mut packet_buf = [0u8; BUF_SIZE];
         let hop_opt = unsafe { get_mut_hopopt_ref_from_array(&mut packet_buf) };
 
-        hop_opt.set_nxt_hdr(58); // Example: ICMPv6
-        assert_eq!(hop_opt.nxt_hdr(), 58);
-        assert_eq!(hop_opt.nxt_hdr, 58);
+        hop_opt.set_next_hdr(58); // Example: ICMPv6
+        assert_eq!(hop_opt.next_hdr(), 58);
+        assert_eq!(hop_opt.next_hdr, 58);
 
         hop_opt.set_hdr_ext_len(1); // Example: Total HBH length would be (1+1)*8 = 16 bytes
         assert_eq!(hop_opt.hdr_ext_len(), 1);
@@ -233,7 +233,7 @@ mod tests {
     fn parse_additional_when_hdr_ext_len_is_zero() {
         const PACKET_SIZE: usize = HopOpt::LEN; // 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
-            59, 0, // nxt_hdr, hdr_ext_len = 0
+            59, 0, // next_hdr, hdr_ext_len = 0
             1, 2, 3, 4, 5, 6, // opt_data
         ];
 
@@ -267,7 +267,7 @@ mod tests {
         const PACKET_SIZE: usize = 8;
         // hdr_ext_len = 1 implies a 16-byte HBH header, but packet data is only 8 bytes.
         let packet_data: [u8; PACKET_SIZE] = [
-            59, 1, // nxt_hdr, hdr_ext_len = 1 (implies (1+1)*8 = 16 bytes total HBH)
+            59, 1, // next_hdr, hdr_ext_len = 1 (implies (1+1)*8 = 16 bytes total HBH)
             1, 2, 3, 4, 5, 6, // opt_data
         ];
 
@@ -285,7 +285,7 @@ mod tests {
     fn parse_additional_one_chunk_exact_hbh_and_packet_length() {
         const PACKET_SIZE: usize = 16; // HBH is 16 bytes, additional options = 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
-            59, 1, // nxt_hdr, hdr_ext_len = 1 (total HBH 16 bytes)
+            59, 1, // next_hdr, hdr_ext_len = 1 (total HBH 16 bytes)
             0, 0, 0, 0, 0, 0, // opt_data
             // Additional 8 bytes for one u64 
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
@@ -307,7 +307,7 @@ mod tests {
     fn parse_additional_multiple_chunks_exact_hbh_and_packet_length() {
         const PACKET_SIZE: usize = 24; // HBH is 24 bytes, additional options = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
-            59, 2, // nxt_hdr, hdr_ext_len = 2 (total HBH 24 bytes)
+            59, 2, // next_hdr, hdr_ext_len = 2 (total HBH 24 bytes)
             0,0,0,0,0,0, // opt_data
             // Chunk 1
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
@@ -372,7 +372,7 @@ mod tests {
         // Packet data is 24 bytes long, containing more data after HBH defined end.
         const PACKET_SIZE: usize = 24;
         let packet_data: [u8; PACKET_SIZE] = [
-            59, 1, // nxt_hdr, hdr_ext_len = 1 (HBH total 16 bytes)
+            59, 1, // next_hdr, hdr_ext_len = 1 (HBH total 16 bytes)
             0,0,0,0,0,0, // opt_data (bytes 0-7 of HBH struct)
             // Chunk 1 (bytes 8-15, this is the defined additional options for HBH)
             0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA,

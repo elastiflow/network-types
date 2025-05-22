@@ -5,7 +5,7 @@ use core::{mem, ptr};
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct Ipv6Route {
-    pub nxt_hdr: u8,
+    pub next_hdr: u8,
     pub hdr_ext_len: u8,
     pub type_: u8,
     pub sgmt_left: u8,
@@ -89,10 +89,10 @@ impl Ipv6Route {
     pub const LEN: usize = mem::size_of::<Ipv6Route>();
 
     /// Gets the Next Header value.
-    pub fn nxt_hdr(&self) -> u8 { self.nxt_hdr }
+    pub fn next_hdr(&self) -> u8 { self.next_hdr }
 
     /// Sets the Next Header value.
-    pub fn set_nxt_hdr(&mut self, nxt_hdr: u8) { self.nxt_hdr = nxt_hdr }
+    pub fn set_next_hdr(&mut self, next_hdr: u8) { self.next_hdr = next_hdr }
 
     /// Gets the Header Extension Length value.
     /// This value is the length of the Routing header
@@ -128,7 +128,7 @@ impl Ipv6Route {
     pub fn total_hdr_len(&self) -> usize { (self.hdr_ext_len as usize + 1) << 3 }
     
     /// Calculates the total length of the Type-specific data field in bytes.
-    /// Total Header Length - 4 bytes (for nxt_hdr, hdr_ext_len, type_, and sgmt_left)
+    /// Total Header Length - 4 bytes (for next_hdr, hdr_ext_len, type_, and sgmt_left)
     pub fn total_type_data_len(&self) -> usize { self.total_hdr_len().saturating_sub(4) }
 
     /// Reads additional type-specific data from an IPv6 Routing header into a caller-provided slice.
@@ -276,23 +276,23 @@ mod tests {
     // --- Tests for Ipv6Route Struct ---
     #[test]
     fn test_ipv6route_len_constant() {
-        assert_eq!(Ipv6Route::LEN, 8); // nxt_hdr, hdr_ext_len, type_, sgmt_left (4 bytes) + type_data (4 bytes)
+        assert_eq!(Ipv6Route::LEN, 8); // next_hdr, hdr_ext_len, type_, sgmt_left (4 bytes) + type_data (4 bytes)
         assert_eq!(Ipv6Route::LEN, mem::size_of::<Ipv6Route>());
     }
 
     #[test]
     fn test_getters_setters() {
         let mut header = Ipv6Route {
-            nxt_hdr: 0,
+            next_hdr: 0,
             hdr_ext_len: 0,
             type_: 0,
             sgmt_left: 0,
             type_data: [0; 4],
         };
 
-        // Test nxt_hdr
-        header.set_nxt_hdr(17); // UDP
-        assert_eq!(header.nxt_hdr(), 17);
+        // Test next_hdr
+        header.set_next_hdr(17); // UDP
+        assert_eq!(header.next_hdr(), 17);
 
         // Test hdr_ext_len
         header.set_hdr_ext_len(2); // 2 * 8 = 16 additional bytes
@@ -315,7 +315,7 @@ mod tests {
     #[test]
     fn test_total_hdr_len() {
         let mut header = Ipv6Route {
-            nxt_hdr: 0,
+            next_hdr: 0,
             hdr_ext_len: 0, // (0 + 1) * 8 = 8 bytes
             type_: 0,
             sgmt_left: 0,
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn test_total_type_data_len() {
         let mut header = Ipv6Route {
-            nxt_hdr: 0,
+            next_hdr: 0,
             hdr_ext_len: 0, // Total header len = 8 bytes
             type_: 0,
             sgmt_left: 0,
@@ -564,7 +564,7 @@ mod tests {
         let mut raw_packet_data = [0u8; BUFFER_LEN];
 
         // The effective header starts at raw_packet_data[1]
-        // This is where nxt_hdr would be, then hdr_ext_len at raw_packet_data[2].
+        // This is where next_hdr would be, then hdr_ext_len at raw_packet_data[2].
         // So, `hdr_ext_len` is at `raw_packet_data[1 + 1]`.
         // The value `1` for hdr_ext_len means total length 16 bytes.
         // `Ipv6Route::LEN` is 8 bytes.
