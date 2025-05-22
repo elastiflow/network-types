@@ -1,4 +1,5 @@
 use core::{mem, ptr};
+
 /// # Authentication Header Format
 ///
 /// | Offset | Octet 0       | Octet 1       | Octet 2       | Octet 3       |
@@ -16,10 +17,9 @@ use core::{mem, ptr};
 /// * **Reserved (16 bits)**: Reserved for future use and initialized to all zeroes.
 /// * **Security Parameters Index (32 bits)**: Identifies the security association of the receiving party.
 /// * **Sequence Number (32 bits)**: A monotonic, strictly increasing sequence number to prevent replay attacks. 
-/// * **Integrity Check Value (multiple of 32 bits)**: A variable-length check value. 
-
+/// * **Integrity Check Value (multiple of 32 bits)**: A variable-length check value.
 /// Authentication Header
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct AuthHdr {
@@ -37,7 +37,6 @@ pub enum AuthHdrError {
     OutOfBounds,
     /// The Authentication Header indicates a length that extends beyond the provided packet data.
     UnexpectedEndOfPacket,
-    // Like IGMPv3 potentially extend for exceeded stack memory error
 }
 
 impl AuthHdr {
@@ -99,7 +98,7 @@ impl AuthHdr {
     /// The Payload Length is in 4-octet units, minus 2.
     /// So, total length = (payload_len + 2) * 4.
     pub fn total_hdr_len(&self) -> usize {
-        (self.payload_len as usize + 2) * 4
+        (self.payload_len as usize + 2) << 2
     }
 
     /// Calculates the length of the Integrity Check Value in bytes.
@@ -108,24 +107,50 @@ impl AuthHdr {
         self.total_hdr_len().saturating_sub(AuthHdr::LEN)
     }
 
-    /// Parses the variable length Integrity Check Value from the packet data.
-    /// 
+    /// Parses the variable-length Integrity Check Value (ICV) from an Authentication Header
+    /// into a caller-provided slice of `u64`.
+    ///
+    /// The Authentication Header's `payload_len` field determines the total length of
+    /// the AH header, from which the length of the ICV is derived. The ICV is the
+    /// data that follows the fixed part of the Authentication Header. This function
+    /// reads the ICV data in 8-byte (u64) chunks.
+    ///
+    /// # Safety
+    /// - `header_ptr` must be a valid pointer to the start of an `AuthHdr`
+    ///   structure within the packet data. This function relies on this pointer to
+    ///   access the `payload_len` field and determine the start of the ICV.
+    /// - `packet_end_ptr` must point to the byte *after* the last valid byte
+    ///   of the packet data.
+    /// - The memory region covered by the Authentication Header, including the ICV,
+    ///   as determined by its `payload_len` field (i.e., `(payload_len + 2) * 4` bytes
+    ///   from `header_ptr`), must be valid, accessible, and part of the packet data.
+    ///
     /// # Arguments
-    /// 
-    /// * `header_ptr` - Pointer to the Authentication Header in the packet data.
-    /// * `packet_end_ptr` - Pointer to the end of the packet data.
-    /// * `output_icv_slice` - Slice to store the parsed Integrity Check Value.
-    /// 
+    /// - `header_ptr`: Pointer to the beginning of the `AuthHdr` (Authentication Header)
+    ///   in the packet.
+    /// - `packet_end_ptr`: Pointer indicating the end of valid packet data.
+    /// - `output_icv_slice`: A mutable slice of `u64` where the parsed ICV will be
+    ///   written. Data is read from the packet (assumed to be in network byte order)
+    ///   and converted to `u64` values (host byte order).
+    ///
     /// # Returns
-    /// 
-    /// * `Ok(usize)` - The number of u64 values parsed from the Integrity Check Value.
-    /// * `Err(AuthHdrError)` - An error occurred during parsing.
+    /// - `Ok(count)`: The number of `u64` elements successfully read from the ICV
+    ///   and written into `output_icv_slice`. This count may be zero if the
+    ///   `payload_len` indicates no ICV is present. It may also be less than the
+    ///   total available ICV data if `output_icv_slice` is too small or if the
+    ///   remaining ICV data is not a multiple of 8 bytes.
+    /// - `Err(AuthHdrError)`: If an error occurs during parsing, such as:
+    ///     - `AuthHdrError::OutOfBounds`: If reading the fixed part of the `AuthHdr`
+    ///       (to access `payload_len`) would go beyond `packet_end_ptr`.
+    ///     - `AuthHdrError::UnexpectedEndOfPacket`: If the total AH length defined by
+    ///       `payload_len` extends beyond `packet_end_ptr`.
+
     pub unsafe fn parse_integrity_check_value_to_u64_slice(
         header_ptr: *const AuthHdr,
         packet_end_ptr: *const u8,
         output_icv_slice: &mut [u64],
     ) -> Result<usize, AuthHdrError> {
-        // Ensure we can read payload_len.
+
         if (header_ptr as *const u8).add(AuthHdr::LEN) > packet_end_ptr {
             return Err(AuthHdrError::OutOfBounds);
         }
@@ -136,12 +161,11 @@ impl AuthHdr {
         let payload_len_val = u8::from_be(payload_len_be) as usize;
 
         // Calculate total header length and verify against packet boundaries.
-        let total_hdr_len = (payload_len_val + 2) * 4;
+        let total_hdr_len = (payload_len_val + 2) << 2;
         if (header_ptr as *const u8).add(total_hdr_len) > packet_end_ptr {
             return Err(AuthHdrError::UnexpectedEndOfPacket);
         }
-
-        // If total_hdr_len is equal to AuthHdr::LEN, there is no ICV.
+        
         if total_hdr_len <= AuthHdr::LEN {
             return Ok(0);
         }
@@ -149,24 +173,19 @@ impl AuthHdr {
         // Determine start and end pointers for ICV data.
         let mut current_icv_ptr = (header_ptr as *const u8).add(AuthHdr::LEN);
         let icv_end_ptr = (header_ptr as *const u8).add(total_hdr_len);
-
         let mut icv_packed_count: usize = 0;
-
-        // Iterate through the ICV data region.
+        
         while current_icv_ptr < icv_end_ptr {
-            // Stop if the output slice is full.
+
             if icv_packed_count >= output_icv_slice.len() {
                 break;
             }
 
             // Check if there are enough bytes remaining in the ICV section
-            // to read a full u64 (8 bytes). We must not read beyond icv_end_ptr.
             if current_icv_ptr.add(mem::size_of::<u64>()) > icv_end_ptr {
-                // Not enough data left for another full u64.
                 break;
             }
-
-            // Temporary 8-byte array to hold the bytes for one u64.
+            
             let mut packed_icv_bytes = [0u8; 8];
 
             // Read 8 bytes from current_icv_ptr into packed_icv_bytes.

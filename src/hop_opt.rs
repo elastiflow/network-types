@@ -1,7 +1,11 @@
 use core::{mem, ptr};
 
 /// IPv6 Hop-by-Hop Options Extension Header
-#[repr(C)]
+/// 
+/// This struct can also be used to represent IPv6 Destination Options Extension Header
+/// as both headers share the same format. The only difference is in the Next Header value
+/// and their position in the IPv6 extension header chain.
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct HopOpt{
@@ -20,7 +24,6 @@ pub enum HopOptError {
     OutOfBounds,
     /// The Hop-by-Hop header indicates a length that extends beyond the provided packet data.
     UnexpectedEndOfPacket,
-    // Like IGMPv3 potentially extend for exceeded stack memory error
 }
 
 impl HopOpt{
@@ -58,7 +61,7 @@ impl HopOpt{
     /// The Hdr Ext Len is in 8-octet units, *excluding* the first 8 octets.
     /// So, total length = (hdr_ext_len + 1) * 8.
     pub fn total_hdr_len(&self) -> usize {
-        (self.hdr_ext_len as usize + 1) * 8
+        (self.hdr_ext_len as usize + 1) << 3
     }
 
     /// Calculates the total length of the options field in bytes.
@@ -67,6 +70,44 @@ impl HopOpt{
         self.total_hdr_len().saturating_sub(2)
     }
 
+    /// Parses Hop-by-Hop options from the variable-length options field of a Hop-by-Hop
+    /// Options header into a caller-provided slice of u64.
+    ///
+    /// This function reads the options data that follows the initial 'Next Header' and
+    /// 'Hdr Ext Len' fields of the Hop-by-Hop Options header. The length of the
+    /// options data is determined by the 'Hdr Ext Len' field. Options are read in
+    /// 8-byte (u64) chunks. This function is intended for scenarios where options
+    /// or their data are aligned and can be meaningfully interpreted as u64 values.
+    ///
+    /// # Safety
+    /// - `header_ptr` must be a valid pointer to the start of a Hop-by-Hop Options
+    ///   header structure (e.g., `HopOptHdr`) within the packet data. The function
+    ///   relies on this pointer to access the 'Hdr Ext Len' field and to determine
+    ///   the start of the options data.
+    /// - `packet_end_ptr` must point to the byte *after* the last valid byte
+    ///   of the packet data.
+    /// - The memory region covered by the Hop-by-Hop Options header, as determined by its
+    ///   'Hdr Ext Len' field (i.e., `(hdr_ext_len_value + 1) * 8` bytes from `header_ptr`),
+    ///   must be valid, accessible, and part of the packet data.
+    ///
+    /// # Arguments
+    /// - `header_ptr`: Pointer to the beginning of the Hop-by-Hop Options header
+    ///   in the packet.
+    /// - `packet_end_ptr`: Pointer indicating the end of valid packet data.
+    /// - `output_options_slice`: A mutable slice of `u64` where the parsed options data
+    ///   will be written. Data is read from the packet (assumed to be in network
+    ///   byte order) and converted to `u64` values (host byte order).
+    ///
+    /// # Returns
+    /// - `Ok(count)`: The number of `u64` elements successfully read from the options
+    ///   field and written into `output_options_slice`. This count may be less than
+    ///   the total available if `output_options_slice` is too small or if the
+    ///   remaining options data is not a multiple of 8 bytes.
+    /// - `Err(HopOptError)`: If an error occurs during parsing, such as:
+    ///     - `HopOptError::OutOfBounds`: If reading the initial part of the Hop-by-Hop header
+    ///       (to access 'Hdr Ext Len') would go beyond `packet_end_ptr`.
+    ///     - `HopOptError::UnexpectedEndOfPacket`: If the total length defined by
+    ///       'Hdr Ext Len' extends beyond `packet_end_ptr`.
     pub unsafe fn parse_additional_options_to_u64_slice(
         header_ptr: *const HopOpt,
         packet_end_ptr: *const u8,
@@ -82,29 +123,24 @@ impl HopOpt{
         let num_opts_be = unsafe {ptr::read_unaligned(num_opts_ptr)};
         let hdr_ext_len_val = u8::from_be(num_opts_be) as usize;
 
-        // If hdr_ext_len is 0, there are no "additional" options beyond the HopOpt struct.
-        // This should signal to caller we can simply parse the original struct definition
         if hdr_ext_len_val == 0 {
             return Ok(0);
         }
 
         // Calculate total HBH header length and verify against packet boundaries.
-        // add 1 to cover the first octet of HBH header
-        let total_hbh_header_len = (hdr_ext_len_val as usize + 1) * 8;
+        // Add 1 to cover the first octet of the Routing header
+        let total_hbh_header_len = (hdr_ext_len_val as usize + 1) << 3;
         if (header_ptr as *const u8).add(total_hbh_header_len) > packet_end_ptr {
             return Err(HopOptError::UnexpectedEndOfPacket);
         }
 
         // Determine start and end pointers for "additional" options data.
         let mut current_opt_ptr = (header_ptr as *const u8).add(mem::size_of::<HopOpt>());
-        // Set specific end based on expected number of additional options
         let hbh_additional_opts_end_ptr = (header_ptr as *const u8).add(total_hbh_header_len);
-
         let mut options_packed_count: usize = 0;
 
-        // Iterate through the "additional" options data region.
         while current_opt_ptr < hbh_additional_opts_end_ptr {
-            // Stop if the output slice is full.
+
             if options_packed_count >= output_opts_slice.len() {
                 // Consider adding HopOptError for dst slice full
                 break;
@@ -113,16 +149,10 @@ impl HopOpt{
             // Check if there are enough bytes remaining in THIS Hop-by-Hop header's additional options section
             // to read a full u64 (8 bytes). We must not read beyond hbh_additional_opts_end_ptr.
             if current_opt_ptr.add(mem::size_of::<u64>()) > hbh_additional_opts_end_ptr {
-                // Not enough data left in *this HBH header* for another full u64.
-                // Stop processing this header's additional options.
                 // Consider adding HopOptError to signal leftover bytes
                 break;
             }
-            // If the above check passes, there are at least 64 bits left to read before the end
-            // Since we've already verified hbh_header_end_ptr <= packet_end_ptr,
-            // reading 8 bytes from current_opt_ptr is also safe with respect to hbh_additional_opts_end_ptr.
 
-            // Temporary 8-byte array to hold the bytes for one u64.
             let mut packed_option_bytes = [0u8; 8];
 
             // Read 8 bytes (64 bits) from current_opt_ptr into packed_option_bytes.
@@ -148,7 +178,7 @@ impl HopOpt{
 #[cfg(test)]
 mod tests {
     use super::*; // Imports HopOpt, HopOptError from the parent module
-    
+
     // Helper to create a mutable HopOpt reference from a mutable byte array.
     // Assumes array is at least HopOpt::LEN (8 bytes) long.
     unsafe fn get_mut_hopopt_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut HopOpt {
@@ -398,4 +428,3 @@ mod tests {
         assert_eq!(output_slice[0], u64::from_be_bytes([1,2,3,4,5,6,7,8]));
     }
 }
-

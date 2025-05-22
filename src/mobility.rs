@@ -30,7 +30,7 @@ use core::ptr;
 /// * **Message Data (variable length)**: A variable-length field containing data specific to the `MH Type` indicated.
 
 /// Mobility Header
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct MobilityHdr {
@@ -158,7 +158,7 @@ impl MobilityHdr {
         let header_len_val = u8::from_be(header_len_be) as usize;
 
         // Calculate total header length and verify against packet boundaries.
-        let total_hdr_len = 8 + (header_len_val * 8);
+        let total_hdr_len = 8 + (header_len_val << 3);
         if (header_ptr as *const u8).add(total_hdr_len) > packet_end_ptr {
             return Err(MobilityHdrError::UnexpectedEndOfPacket);
         }

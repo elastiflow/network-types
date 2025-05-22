@@ -13,7 +13,7 @@
 use core::mem;
 
 /// Encapsulating Security Payload (ESP) Header
-#[repr(C)]
+#[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
 pub struct Esp {
