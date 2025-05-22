@@ -14,3 +14,4 @@ pub mod vxlan;
 pub mod hop_opt;
 pub mod ipv6_route;
 pub mod fragment;
+pub mod auth;
