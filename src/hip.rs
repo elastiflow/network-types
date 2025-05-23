@@ -67,7 +67,7 @@
 /// * **HIP Parameters (variable length)**: A variable-length field containing various HIP parameters that provide additional information or data specific to the `Packet Type`.
 
 use core::mem;
-use crate::hip_param::{HipParamTlv, HipParamError};
+use crate::hip_param::{HipParamTlv};
 
 /// HIP version 2 protocol header structure
 #[repr(C, packed)]
@@ -233,54 +233,46 @@ impl HipHdr {
     /// Parses the HIP Parameters from a HIP packet and stores their contents in a provided output slice.
     ///
     /// This function iterates through all HIP parameters in the packet and calls
-    /// `parse_contents_to_u64_slice` for each one, storing the results in the provided output slice.
+    /// `contents_buffer` for each one, storing the results in the provided output slice.
     ///
     /// # Safety
     ///
     /// This function is unsafe because it dereferences raw pointers and performs
     /// pointer arithmetic. The caller must ensure that:
     ///
-    /// - `header_ptr` points to a valid `HipHdr` structure.
+    /// - `self` points to a valid `HipHdr` structure.
     /// - `packet_end_ptr` points to the end of the packet buffer.
     /// - `output_slice` is large enough to hold all the parsed parameter contents.
     ///
     /// # Arguments
     ///
-    /// - `header_ptr`: A pointer to the HIP header.
     /// - `packet_end_ptr`: A pointer to the end of the packet buffer.
     /// - `output_slice`: A mutable slice to store the parsed parameter contents as u64 values.
     ///
     /// # Returns
     ///
-    /// - `Ok(usize)`: The number of u64 values successfully parsed and stored in `output_slice`.
-    /// - `Err(HipParamError)`: If an error occurs during parsing.
+    /// - `usize`: The number of u64 values successfully parsed and stored in `output_slice`.
     pub unsafe fn parse_params(
-        header_ptr: *const HipHdr,
+        &self,
         packet_end_ptr: *const u8,
         output_slice: &mut [u64],
-    ) -> Result<usize, HipParamError>
+    ) -> usize
     {
-        // Check if the header is within bounds
-        if (header_ptr as *const u8).add(HipHdr::LEN) > packet_end_ptr {
-            return Err(HipParamError::OutOfBounds);
-        }
-
-        // Read the header to get the parameters length
-        let hip_hdr = &*header_ptr;
-        let params_length = hip_hdr.params_length();
+        let self_ptr: *const HipHdr = self;
+        let params_length = self.params_length();
 
         // If there are no parameters, return early
         if params_length == 0 {
-            return Ok(0);
+            return 0;
         }
 
         // Calculate the start and end of the parameters area
-        let params_start_ptr = (header_ptr as *const u8).add(HipHdr::FIXED_HEADER_SIZE);
+        let params_start_ptr = (self_ptr as *const u8).add(HipHdr::FIXED_HEADER_SIZE);
         let params_end_ptr = params_start_ptr.add(params_length);
 
         // Check if the parameters area is within bounds
         if params_end_ptr > packet_end_ptr {
-            return Err(HipParamError::UnexpectedEndOfPacket);
+            return 0;
         }
 
         let mut current_param_ptr = params_start_ptr;
@@ -299,21 +291,16 @@ impl HipHdr {
 
             // Check if the parameter fits within the parameters area
             if current_param_ptr.add(param_total_len) > params_end_ptr {
-                return Err(HipParamError::UnexpectedEndOfPacket);
+                return total_u64_count;
             }
-
-            // Check if we have space left in the output slice
+            
             if total_u64_count >= output_slice.len() {
                 break;
             }
 
             // Parse the parameter contents into the output slice
             let remaining_slice = &mut output_slice[total_u64_count..];
-            let u64_count = HipParamTlv::parse_contents_to_u64_slice(
-                param_tlv_ptr,
-                packet_end_ptr,
-                remaining_slice,
-            )?;
+            let u64_count = param_tlv.contents_buffer(remaining_slice);
 
             // Update the total count of u64 values parsed
             total_u64_count += u64_count;
@@ -322,7 +309,7 @@ impl HipHdr {
             current_param_ptr = current_param_ptr.add(param_total_len);
         }
 
-        Ok(total_u64_count)
+        total_u64_count
     }
 }
 
@@ -445,16 +432,16 @@ mod tests {
         let mut output_slice = [0u64; 4];
 
         // Call parse_params
+        let hip_hdr_ref = unsafe { &*(packet_data.as_ptr() as *const HipHdr) };
         let result = unsafe {
-            HipHdr::parse_params(
-                packet_data.as_ptr() as *const HipHdr,
+            hip_hdr_ref.parse_params(
                 packet_data.as_ptr().add(PACKET_SIZE),
                 &mut output_slice,
             )
         };
 
         // Check the result
-        assert_eq!(result, Ok(2)); // Should parse 2 u64 values
+        assert_eq!(result, 2); // Should parse 2 u64 values
 
         // Check the parsed values
         let expected_value1 = u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -510,16 +497,16 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         // Call parse_params
+        let hip_hdr_ref = unsafe { &*(packet_data.as_ptr() as *const HipHdr) };
         let result = unsafe {
-            HipHdr::parse_params(
-                packet_data.as_ptr() as *const HipHdr,
+            hip_hdr_ref.parse_params(
                 packet_data.as_ptr().add(PACKET_SIZE),
                 &mut output_slice,
             )
         };
 
         // Check the result
-        assert_eq!(result, Ok(1)); // Should parse only 1 u64 value due to limited space
+        assert_eq!(result, 1); // Should parse only 1 u64 value due to limited space
 
         // Check the parsed value
         let expected_value = u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -559,16 +546,16 @@ mod tests {
         let mut output_slice = [0u64; 4];
 
         // Call parse_params
+        let hip_hdr_ref = unsafe { &*(packet_data.as_ptr() as *const HipHdr) };
         let result = unsafe {
-            HipHdr::parse_params(
-                packet_data.as_ptr() as *const HipHdr,
+            hip_hdr_ref.parse_params(
                 packet_data.as_ptr().add(PACKET_SIZE),
                 &mut output_slice,
             )
         };
 
         // Check the result
-        assert_eq!(result, Ok(2)); // Should parse 2 u64 values
+        assert_eq!(result, 2); // Should parse 2 u64 values
 
         // Check the parsed values
         let expected_value1 = u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8]);
@@ -610,16 +597,16 @@ mod tests {
         let mut output_slice = [0u64; 4];
 
         // Call parse_params
+        let hip_hdr_ref = unsafe { &*(packet_data.as_ptr() as *const HipHdr) };
         let result = unsafe {
-            HipHdr::parse_params(
-                packet_data.as_ptr() as *const HipHdr,
+            hip_hdr_ref.parse_params(
                 packet_data.as_ptr().add(PACKET_SIZE),
                 &mut output_slice,
             )
         };
 
         // Check the result
-        assert_eq!(result, Ok(1)); // Should parse only 1 u64 value, ignoring the remaining 2 bytes
+        assert_eq!(result, 1); // Should parse only 1 u64 value, ignoring the remaining 2 bytes
 
         // Check the parsed value
         let expected_value = u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8]);

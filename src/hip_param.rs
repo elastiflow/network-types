@@ -42,7 +42,8 @@
 ///
 /// This formula accounts for the 4 bytes of the `Type`/`C-bit`/`Length` fields, the `Contents` length, and enough padding to reach the next multiple of 8.
 
-use core::{mem, ptr};
+use crate::chunk_reader;
+use core::{mem};
 
 /// Errors that can occur during HIP Parameter parsing.
 #[derive(Debug, PartialEq, Eq)]
@@ -144,95 +145,53 @@ impl HipParamTlv {
         self.len() as usize
     }
 
-    /// Parses the variable-length Contents from a HIP Parameter TLV
+    /// Constant for the size of each chunk when reading Contents data
+    const CONTENTS_CHUNK_LEN: usize = mem::size_of::<u64>();
+
+    /// Extracts the variable-length Contents from a HIP Parameter TLV
     /// into a caller-provided slice of `u64`.
     ///
+    /// The HIP Parameter's `len` field determines the total length of
+    /// the Contents section. This function reads the Contents data in 8-byte (u64) chunks.
+    ///
     /// # Safety
-    ///
-    /// This function is unsafe because it dereferences raw pointers and performs
-    /// pointer arithmetic. The caller must ensure that:
-    ///
-    /// - `header_ptr` points to a valid `HipParamTlv` structure.
-    /// - `packet_end_ptr` points to the end of the packet buffer.
-    /// - `output_content_slice` is large enough to hold the parsed content.
+    /// This method is unsafe because it performs raw pointer arithmetic and memory access.
+    /// The caller must ensure:
+    /// - The HipParamTlv instance points to valid memory containing a complete HIP Parameter
+    /// - The memory region from the HipParamTlv through the end of the Contents is valid and accessible
     ///
     /// # Arguments
-    ///
-    /// - `header_ptr`: A pointer to the HIP Parameter TLV header.
-    /// - `packet_end_ptr`: A pointer to the end of the packet buffer.
-    /// - `output_content_slice`: A mutable slice to store the parsed content as u64 values.
+    /// - `contents_buffer`: A mutable slice of `u64` where the parsed Contents will be
+    ///   written. Data is read from the packet (assumed to be in network byte order)
+    ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    ///
-    /// - `Ok(usize)`: The number of u64 values successfully parsed from the Contents
-    ///   and written into `output_content_slice`. This count may be zero if the
-    ///   `length` indicates no Contents is present. It may also be less than the
-    ///   total available Contents data if `output_content_slice` is too small or if the
-    ///   remaining Contents data is not a multiple of 8 bytes.
-    /// - `Err(HipParamError)`: If an error occurs during parsing, such as:
-    ///     - `HipParamError::OutOfBounds`: If reading the fixed part of the `HipParamTlv`
-    ///       (to access `length`) would go beyond `packet_end_ptr`.
-    ///     - `HipParamError::UnexpectedEndOfPacket`: If the total parameter length defined by
-    ///       `length` extends beyond `packet_end_ptr`.
-    pub unsafe fn parse_contents_to_u64_slice(
-        header_ptr: *const HipParamTlv,
-        packet_end_ptr: *const u8,
-        output_content_slice: &mut [u64],
-    ) -> Result<usize, HipParamError> {
-        if (header_ptr as *const u8).add(HipParamTlv::LEN) > packet_end_ptr {
-            return Err(HipParamError::OutOfBounds);
-        }
-
-        // Read len field
-        let len_ptr = ptr::addr_of!((*header_ptr).len);
-        let len_be = unsafe { ptr::read_unaligned(len_ptr) };
-        let content_len = u16::from_be_bytes(len_be) as usize;
-
-        // Calculate total parameter length and verify against packet boundaries
-        let total_param_len = 4 + content_len + ((8 - ((content_len + 4) % 8)) % 8);
-        if (header_ptr as *const u8).add(total_param_len) > packet_end_ptr {
-            return Err(HipParamError::UnexpectedEndOfPacket);
-        }
+    /// The number of complete u64 words successfully read from the Contents and written
+    /// to `contents_buffer`. This may be:
+    /// - 0 if no Contents data is present
+    /// - Less than the total available Contents data if:
+    ///   - `contents_buffer` is too small to hold all Contents words
+    ///   - The remaining Contents bytes are not enough for a complete u64 word
+    pub unsafe fn contents_buffer(&self, contents_buffer: &mut [u64]) -> usize {
+        let self_ptr: *const HipParamTlv = self;
+        let self_ptr_u8: *const u8 = self_ptr as *const u8;
+        let content_len = self.total_param_len();
+        let start_data_ptr = (self_ptr_u8).add(HipParamTlv::LEN);
+        let end_data_ptr = (self_ptr_u8).add(content_len);
 
         if content_len == 0 {
-            return Ok(0);
+            return 0;
         }
 
-        // Determine start and end pointers for Contents data
-        let mut current_content_ptr = (header_ptr as *const u8).add(HipParamTlv::LEN);
-        let content_end_ptr = current_content_ptr.add(content_len);
-        let mut content_packed_count: usize = 0;
-
-        while current_content_ptr < content_end_ptr {
-            if content_packed_count >= output_content_slice.len() {
-                break;
-            }
-
-            // Check if there are enough bytes remaining in the Contents section
-            if current_content_ptr.add(mem::size_of::<u64>()) > content_end_ptr {
-                break;
-            }
-
-            let mut packed_content_bytes = [0u8; 8];
-
-            // Read 8 bytes from current_content_ptr into packed_content_bytes
-            ptr::copy_nonoverlapping(
-                current_content_ptr,                // Source pointer from packet data
-                packed_content_bytes.as_mut_ptr(),  // Destination buffer
-                mem::size_of::<u64>()               // Length to copy (8 bytes)
-            );
-
-            // Advance current_content_ptr by the number of bytes read
-            current_content_ptr = current_content_ptr.add(mem::size_of::<u64>());
-
-            // Convert the 8 bytes into a u64
-            output_content_slice[content_packed_count] = u64::from_be_bytes(packed_content_bytes);
-            content_packed_count += 1;
-        }
-
-        Ok(content_packed_count)
+        chunk_reader::read_u64_chunks(
+            start_data_ptr,
+            end_data_ptr,
+            contents_buffer,
+            Self::CONTENTS_CHUNK_LEN
+        )
     }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -288,7 +247,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_contents_when_content_len_is_zero() {
+    fn test_contents_buffer_when_content_len_is_zero() {
         // When content_len is 0, total_param_len is 8 (4 header + 4 padding)
         const PACKET_SIZE: usize = 8; // 4 bytes header + 4 bytes padding
         let packet_data: [u8; PACKET_SIZE] = [
@@ -297,52 +256,17 @@ mod tests {
             0x00, 0x00, 0x00, 0x00, // padding
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, Ok(0));
+        assert_eq!(result, 0);
     }
 
     #[test]
-    fn test_parse_contents_error_out_of_bounds_on_short_packet() {
-        const PACKET_SIZE: usize = 1; // Packet too short for initial read of length
-        let packet_data: [u8; PACKET_SIZE] = [0x12];
-
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(HipParamError::OutOfBounds));
-    }
-
-    #[test]
-    fn test_parse_contents_error_unexpected_end_of_packet() {
-        const PACKET_SIZE: usize = 4;
-        // len = 8 implies a 12-byte parameter (4 header + 8 content), but packet data is only 4 bytes.
-        let packet_data: [u8; PACKET_SIZE] = [
-            0x12, 0x34, // type_ (param_type = 0x1234, critical = false)
-            0x00, 0x08, // len = 8
-        ];
-
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(HipParamError::UnexpectedEndOfPacket));
-    }
-
-    #[test]
-    fn test_parse_contents_one_chunk_exact_param_and_packet_length() {
+    fn test_contents_buffer_one_chunk_exact_param_and_packet_length() {
         // When content_len is 8, total_param_len is 16 (4 header + 8 content + 4 padding)
         const PACKET_SIZE: usize = 16; // Parameter is 16 bytes, Content = 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
@@ -354,20 +278,19 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, Ok(1));
+        assert_eq!(result, 1);
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
     }
 
     #[test]
-    fn test_parse_contents_multiple_chunks_exact_param_and_packet_length() {
+    fn test_contents_buffer_multiple_chunks_exact_param_and_packet_length() {
         // When content_len is 16, total_param_len is 24 (4 header + 16 content + 4 padding)
         const PACKET_SIZE: usize = 24; // Parameter is 24 bytes, Content = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
@@ -381,20 +304,19 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
         let mut output_slice = [0u64; 2];
 
         let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, Ok(2));
+        assert_eq!(result, 2);
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
         assert_eq!(output_slice[1], u64::from_be_bytes([0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00]));
     }
 
     #[test]
-    fn test_parse_contents_output_slice_is_too_small() {
+    fn test_contents_buffer_output_slice_is_too_small() {
         // When content_len is 16, total_param_len is 24 (4 header + 16 content + 4 padding)
         const PACKET_SIZE: usize = 24; // Parameter is 24 bytes, Content = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
@@ -408,19 +330,18 @@ mod tests {
             0x00, 0x00, 0x00, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
         let mut output_slice = [0u64; 1]; // Only room for 1 chunk, but there are 2
 
         let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, Ok(1)); // Should only parse 1 chunk
+        assert_eq!(result, 1); // Should only parse 1 chunk
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
     }
 
     #[test]
-    fn test_parse_contents_with_non_multiple_of_8_content_length() {
+    fn test_contents_buffer_with_non_multiple_of_8_content_length() {
         const PACKET_SIZE: usize = 16; // Parameter is 16 bytes, Content = 10 bytes + 2 padding
         let packet_data: [u8; PACKET_SIZE] = [
             0x12, 0x34, // type_ (param_type = 0x1234, critical = false)
@@ -431,14 +352,13 @@ mod tests {
             0x00, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HipParamTlv;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
         let mut output_slice = [0u64; 2];
 
         let result = unsafe {
-            HipParamTlv::parse_contents_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, Ok(1)); // Should only parse 1 complete chunk (8 bytes)
+        assert_eq!(result, 1); // Should only parse 1 complete chunk (8 bytes)
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
     }
 }
