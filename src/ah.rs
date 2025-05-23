@@ -22,7 +22,7 @@ use core::{mem, ptr};
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
-pub struct AuthHdr {
+pub struct AhHdr {
     pub next_hdr: u8,
     pub payload_len: u8,
     pub reserved: [u8; 2],
@@ -32,9 +32,9 @@ pub struct AuthHdr {
 
 const ICV_U64_WORD_SIZE: usize = mem::size_of::<u64>();
 
-impl AuthHdr {
+impl AhHdr {
     /// The total size in bytes of the fixed part of the Authentication Header
-    pub const LEN: usize = mem::size_of::<AuthHdr>();
+    pub const LEN: usize = mem::size_of::<AhHdr>();
 
     /// Gets the Next Header value.
     pub fn next_hdr(&self) -> u8 {
@@ -97,7 +97,7 @@ impl AuthHdr {
     /// Calculates the length of the Integrity Check Value in bytes.
     /// ICV length = Total Header Length - Fixed Header Length.
     pub fn icv_len(&self) -> usize {
-        self.total_hdr_len().saturating_sub(AuthHdr::LEN)
+        self.total_hdr_len().saturating_sub(AhHdr::LEN)
     }
 
     /// Extracts the variable-length Integrity Check Value (ICV) from the Authentication Header
@@ -111,8 +111,8 @@ impl AuthHdr {
     /// # Safety
     /// This method is unsafe because it performs raw pointer arithmetic and memory access.
     /// The caller must ensure:
-    /// - The AuthHdr instance points to valid memory containing a complete Authentication Header
-    /// - The memory region from the AuthHdr through the end of the ICV is valid and accessible
+    /// - The AhHdr instance points to valid memory containing a complete Authentication Header
+    /// - The memory region from the AhHdr through the end of the ICV is valid and accessible
     /// - The total length calculated from payload_len does not exceed available memory bounds
     ///
     /// # Arguments
@@ -131,13 +131,13 @@ impl AuthHdr {
         &self,
         icv_buffer: &mut [u64],
     ) -> usize {
-        let self_ptr: *const AuthHdr = self;
+        let self_ptr: *const AhHdr = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
-        let mut icv_curr_ptr = (self_ptr_u8).add(AuthHdr::LEN);
+        let mut icv_curr_ptr = (self_ptr_u8).add(AhHdr::LEN);
         let icv_end_ptr = (self_ptr_u8).add(total_hdr_len);
 
-        if total_hdr_len <= AuthHdr::LEN {
+        if total_hdr_len <= AhHdr::LEN {
             return 0
         }
 
@@ -172,17 +172,17 @@ impl AuthHdr {
 mod tests {
     use super::*;
 
-    // Helper to create a mutable AuthHdr reference from a mutable byte array.
-    unsafe fn get_mut_authhdr_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut AuthHdr {
-        assert!(N >= AuthHdr::LEN, "Array too small to cast to AuthHdr for testing");
-        &mut *(data.as_mut_ptr() as *mut AuthHdr)
+    // Helper to create a mutable AhHdr reference from a mutable byte array.
+    unsafe fn get_mut_ahhdr_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut AhHdr {
+        assert!(N >= AhHdr::LEN, "Array too small to cast to ahhdr for testing");
+        &mut *(data.as_mut_ptr() as *mut AhHdr)
     }
 
     #[test]
-    fn test_authhdr_getters_and_setters() {
-        const BUF_SIZE: usize = AuthHdr::LEN;
+    fn test_ahhdr_getters_and_setters() {
+        const BUF_SIZE: usize = AhHdr::LEN;
         let mut packet_buf = [0u8; BUF_SIZE];
-        let auth_hdr = unsafe { get_mut_authhdr_ref_from_array(&mut packet_buf) };
+        let auth_hdr = unsafe { get_mut_ahhdr_ref_from_array(&mut packet_buf) };
 
         // Test next_hdr
         auth_hdr.set_next_hdr(6); // Example: TCP
@@ -211,10 +211,10 @@ mod tests {
     }
 
     #[test]
-    fn test_authhdr_length_calculation_methods() {
-        const BUF_SIZE: usize = AuthHdr::LEN;
+    fn test_ahhdr_length_calculation_methods() {
+        const BUF_SIZE: usize = AhHdr::LEN;
         let mut packet_buf = [0u8; BUF_SIZE];
-        let auth_hdr = unsafe { get_mut_authhdr_ref_from_array(&mut packet_buf) };
+        let auth_hdr = unsafe { get_mut_ahhdr_ref_from_array(&mut packet_buf) };
 
         // Test with payload_len = 0
         auth_hdr.set_payload_len(0);
@@ -234,12 +234,12 @@ mod tests {
         // Test with payload_len = 255 (max value)
         auth_hdr.set_payload_len(255);
         assert_eq!(auth_hdr.total_hdr_len(), (255 + 2) * 4);
-        assert_eq!(auth_hdr.icv_len(), (255 + 2) * 4 - AuthHdr::LEN);
+        assert_eq!(auth_hdr.icv_len(), (255 + 2) * 4 - AhHdr::LEN);
     }
 
     #[test]
     fn test_extract_icv_when_payload_len_is_zero() {
-        const PACKET_SIZE: usize = AuthHdr::LEN; // 12 bytes
+        const PACKET_SIZE: usize = AhHdr::LEN; // 12 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             6, 0, // next_hdr, payload_len = 0
             0, 0, // reserved
@@ -247,7 +247,7 @@ mod tests {
             5, 6, 7, 8, // seq_num
         ];
 
-        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
@@ -268,7 +268,7 @@ mod tests {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
         ];
 
-        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
@@ -293,7 +293,7 @@ mod tests {
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 2];
 
         let result = unsafe {
@@ -318,7 +318,7 @@ mod tests {
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe {

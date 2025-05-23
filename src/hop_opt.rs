@@ -8,7 +8,7 @@ use core::{mem, ptr};
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
 #[cfg_attr(feature = "serde", derive(::serde::Serialize, ::serde::Deserialize))]
-pub struct HopOpt{
+pub struct HopOptHdr{
     pub next_hdr: u8,
     pub hdr_ext_len: u8,
     /// The first 6 bytes of the options field.
@@ -26,9 +26,9 @@ pub enum HopOptError {
     UnexpectedEndOfPacket,
 }
 
-impl HopOpt{
+impl HopOptHdr {
     /// The total size in bytes of default length HbH header
-    pub const LEN: usize = mem::size_of::<HopOpt>();
+    pub const LEN: usize = mem::size_of::<HopOptHdr>();
 
     /// Gets the Next Header value.
     pub fn next_hdr(&self) -> u8 {
@@ -109,7 +109,7 @@ impl HopOpt{
     ///     - `HopOptError::UnexpectedEndOfPacket`: If the total length defined by
     ///       'Hdr Ext Len' extends beyond `packet_end_ptr`.
     pub unsafe fn parse_additional_options_to_u64_slice(
-        header_ptr: *const HopOpt,
+        header_ptr: *const HopOptHdr,
         packet_end_ptr: *const u8,
         output_opts_slice: &mut [u64],
     ) -> Result<usize, HopOptError> {
@@ -135,7 +135,7 @@ impl HopOpt{
         }
 
         // Determine start and end pointers for "additional" options data.
-        let mut current_opt_ptr = (header_ptr as *const u8).add(mem::size_of::<HopOpt>());
+        let mut current_opt_ptr = (header_ptr as *const u8).add(mem::size_of::<HopOptHdr>());
         let hbh_additional_opts_end_ptr = (header_ptr as *const u8).add(total_hbh_header_len);
         let mut options_packed_count: usize = 0;
 
@@ -171,7 +171,6 @@ impl HopOpt{
 
         Ok(options_packed_count)
     }
-
 }
 
 #[cfg(test)]
@@ -180,15 +179,15 @@ mod tests {
 
     // Helper to create a mutable HopOpt reference from a mutable byte array.
     // Assumes array is at least HopOpt::LEN (8 bytes) long.
-    unsafe fn get_mut_hopopt_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut HopOpt {
-        assert!(N >= HopOpt::LEN, "Array too small to cast to HopOpt for testing");
-        &mut *(data.as_mut_ptr() as *mut HopOpt)
+    unsafe fn get_mut_hopopt_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut HopOptHdr {
+        assert!(N >= HopOptHdr::LEN, "Array too small to cast to HopOpt for testing");
+        &mut *(data.as_mut_ptr() as *mut HopOptHdr)
     }
 
     // --- Tests for HopOpt struct's direct methods ---
     #[test]
     fn test_hopopt_getters_and_setters() {
-        const BUF_SIZE: usize = HopOpt::LEN;
+        const BUF_SIZE: usize = HopOptHdr::LEN;
         let mut packet_buf = [0u8; BUF_SIZE];
         let hop_opt = unsafe { get_mut_hopopt_ref_from_array(&mut packet_buf) };
 
@@ -210,7 +209,7 @@ mod tests {
 
     #[test]
     fn test_hopopt_length_calculation_methods() {
-        const BUF_SIZE: usize = HopOpt::LEN;
+        const BUF_SIZE: usize = HopOptHdr::LEN;
         let mut packet_buf = [0u8; BUF_SIZE];
         let hop_opt = unsafe { get_mut_hopopt_ref_from_array(&mut packet_buf) };
 
@@ -230,18 +229,18 @@ mod tests {
     // --- Tests for parse_additional_options_to_u64_slice ---
     #[test]
     fn parse_additional_when_hdr_ext_len_is_zero() {
-        const PACKET_SIZE: usize = HopOpt::LEN; // 8 bytes
+        const PACKET_SIZE: usize = HopOptHdr::LEN; // 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             59, 0, // next_hdr, hdr_ext_len = 0
             1, 2, 3, 4, 5, 6, // opt_data
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(0));
     }
@@ -251,12 +250,12 @@ mod tests {
         const PACKET_SIZE: usize = 1; // Packet too short for initial read of hdr_ext_len
         let packet_data: [u8; PACKET_SIZE] = [59];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Err(HopOptError::OutOfBounds));
     }
@@ -270,12 +269,12 @@ mod tests {
             1, 2, 3, 4, 5, 6, // opt_data
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Err(HopOptError::UnexpectedEndOfPacket));
     }
@@ -290,12 +289,12 @@ mod tests {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(1));
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
@@ -314,12 +313,12 @@ mod tests {
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 2];
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(2));
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
@@ -335,12 +334,12 @@ mod tests {
             0x33,0x44,0x55,0x66,0x77,0x88,0x99,0x00, // Chunk 2
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(1));
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
@@ -354,12 +353,12 @@ mod tests {
             0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22,
             0x33,0x44,0x55,0x66,0x77,0x88,0x99,0x00,
         ];
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 0]; // Empty output slice.
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(0));
     }
@@ -379,12 +378,12 @@ mod tests {
             0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB, 0xBB,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 2]; // Space for two u64s, but only one should be filled.
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         // Expected behavior using hbh_additional_opts_end_ptr for loop:
         // Loop Iteration 1:
@@ -416,12 +415,12 @@ mod tests {
             0,0,0,0,0,0,
             1,2,3,4,5,6,7,8,9
         ];
-        let header_ptr = packet_data.as_ptr() as *const HopOpt;
+        let header_ptr = packet_data.as_ptr() as *const HopOptHdr;
         let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
         let mut output_slice = [0u64; 1]; // Expect one u64
 
         let result = unsafe {
-            HopOpt::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            HopOptHdr::parse_additional_options_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
         };
         assert_eq!(result, Ok(1)); // Reads the full 8 additional bytes.
         assert_eq!(output_slice[0], u64::from_be_bytes([1,2,3,4,5,6,7,8]));
