@@ -1,4 +1,5 @@
-use core::{mem, ptr};
+use crate::chunk_reader;
+use core::mem;
 
 /// # Authentication Header Format
 ///
@@ -12,11 +13,11 @@ use core::{mem, ptr};
 ///
 /// ## Fields
 ///
-/// * **Next Header (8 bits)**: Identifies the type of the next header, 
-/// * **Payload Len (8 bits)**: The length of this Authentication Header in 4-octet units, 
+/// * **Next Header (8 bits)**: Identifies the type of the next header,
+/// * **Payload Len (8 bits)**: The length of this Authentication Header in 4-octet units,
 /// * **Reserved (16 bits)**: Reserved for future use and initialized to all zeroes.
 /// * **Security Parameters Index (32 bits)**: Identifies the security association of the receiving party.
-/// * **Sequence Number (32 bits)**: A monotonic, strictly increasing sequence number to prevent replay attacks. 
+/// * **Sequence Number (32 bits)**: A monotonic, strictly increasing sequence number to prevent replay attacks.
 /// * **Integrity Check Value (multiple of 32 bits)**: A variable-length check value.
 /// Authentication Header
 #[repr(C, packed)]
@@ -30,7 +31,7 @@ pub struct AhHdr {
     pub seq_num: [u8; 4],
 }
 
-const ICV_U64_WORD_SIZE: usize = mem::size_of::<u64>();
+const ICV_CHUNK_LEN: usize = mem::size_of::<u64>();
 
 impl AhHdr {
     /// The total size in bytes of the fixed part of the Authentication Header
@@ -127,44 +128,18 @@ impl AhHdr {
     /// - Less than the total available ICV data if:
     ///   - `icv_buffer` is too small to hold all ICV words
     ///   - The remaining ICV bytes are not enough for a complete u64 word
-    pub unsafe fn icv_to_slice(
-        &self,
-        icv_buffer: &mut [u64],
-    ) -> usize {
+    pub unsafe fn icv_buffer(&self, icv_buffer: &mut [u64]) -> usize {
         let self_ptr: *const AhHdr = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
-        let mut icv_curr_ptr = (self_ptr_u8).add(AhHdr::LEN);
-        let icv_end_ptr = (self_ptr_u8).add(total_hdr_len);
+        let start_data_ptr = (self_ptr_u8).add(AhHdr::LEN);
+        let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
 
         if total_hdr_len <= AhHdr::LEN {
-            return 0
+            return 0;
         }
 
-        let mut icv_words_copied = 0;
-        while icv_curr_ptr < icv_end_ptr && icv_words_copied < icv_buffer.len() {
-            // Check if there are enough bytes remaining in the ICV section for a full u64.
-            if icv_curr_ptr.add(ICV_U64_WORD_SIZE) > icv_end_ptr {
-                break; // Not enough data for a full u64 word.
-            }
-
-            // Read ICV_U64_WORD_SIZE bytes from current_icv_read_ptr.
-            // Assuming ICV_U64_WORD_SIZE is 8 for u64.
-            let mut icv_word_bytes = [0u8; ICV_U64_WORD_SIZE];
-            ptr::copy_nonoverlapping(
-                icv_curr_ptr,
-                icv_word_bytes.as_mut_ptr(),
-                ICV_U64_WORD_SIZE,
-            );
-
-            // Convert the bytes into a u64 and store it in the output slice.
-            icv_buffer[icv_words_copied] = u64::from_be_bytes(icv_word_bytes);
-
-            // Advance current_icv_read_ptr by the number of bytes read.
-            icv_curr_ptr = icv_curr_ptr.add(ICV_U64_WORD_SIZE);
-            icv_words_copied += 1;
-        }
-        icv_words_copied
+        chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, icv_buffer, ICV_CHUNK_LEN)
     }
 }
 
@@ -174,7 +149,10 @@ mod tests {
 
     // Helper to create a mutable AhHdr reference from a mutable byte array.
     unsafe fn get_mut_ahhdr_ref_from_array<const N: usize>(data: &mut [u8; N]) -> &mut AhHdr {
-        assert!(N >= AhHdr::LEN, "Array too small to cast to ahhdr for testing");
+        assert!(
+            N >= AhHdr::LEN,
+            "Array too small to cast to ahhdr for testing"
+        );
         &mut *(data.as_mut_ptr() as *mut AhHdr)
     }
 
@@ -250,9 +228,7 @@ mod tests {
         let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1];
 
-        let result = unsafe {
-            auth_hdr.icv_to_slice(&mut output_slice)
-        };
+        let result = unsafe { auth_hdr.icv_buffer(&mut output_slice) };
         assert_eq!(result, 0);
     }
 
@@ -271,9 +247,7 @@ mod tests {
         let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1];
 
-        let result = unsafe {
-            auth_hdr.icv_to_slice(&mut output_slice)
-        };
+        let result = unsafe { auth_hdr.icv_buffer(&mut output_slice) };
         assert_eq!(result, 1);
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
@@ -288,20 +262,23 @@ mod tests {
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
             // ICV Chunk 1
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
-            // ICV Chunk 2
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, // ICV Chunk 2
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
         let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 2];
 
-        let result = unsafe {
-            auth_hdr.icv_to_slice(&mut output_slice)
-        };
+        let result = unsafe { auth_hdr.icv_buffer(&mut output_slice) };
         assert_eq!(result, 2);
-        assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
-        assert_eq!(output_slice[1], u64::from_be_bytes([0x33,0x44,0x55,0x66,0x77,0x88,0x99,0x00]));
+        assert_eq!(
+            output_slice[0],
+            u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+        );
+        assert_eq!(
+            output_slice[1],
+            u64::from_be_bytes([0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00])
+        );
     }
 
     #[test]
@@ -313,18 +290,18 @@ mod tests {
             1, 2, 3, 4, // spi
             5, 6, 7, 8, // seq_num
             // ICV Chunk 1
-            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
-            // ICV Chunk 2
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, // ICV Chunk 2
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
         let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AhHdr) };
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
-        let result = unsafe {
-            auth_hdr.icv_to_slice(&mut output_slice)
-        };
+        let result = unsafe { auth_hdr.icv_buffer(&mut output_slice) };
         assert_eq!(result, 1);
-        assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
+        assert_eq!(
+            output_slice[0],
+            u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+        );
     }
 }
