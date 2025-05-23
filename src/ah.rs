@@ -30,14 +30,7 @@ pub struct AuthHdr {
     pub seq_num: [u8; 4],
 }
 
-/// Errors that can occur during Authentication Header parsing.
-#[derive(Debug, PartialEq, Eq)]
-pub enum AuthHdrError {
-    /// Packet data ended unexpectedly, or a declared length exceeds packet boundaries.
-    OutOfBounds,
-    /// The Authentication Header indicates a length that extends beyond the provided packet data.
-    UnexpectedEndOfPacket,
-}
+const ICV_U64_WORD_SIZE: usize = mem::size_of::<u64>();
 
 impl AuthHdr {
     /// The total size in bytes of the fixed part of the Authentication Header
@@ -107,7 +100,7 @@ impl AuthHdr {
         self.total_hdr_len().saturating_sub(AuthHdr::LEN)
     }
 
-    /// Parses the variable-length Integrity Check Value (ICV) from an Authentication Header
+    /// Extracts the variable-length Integrity Check Value (ICV) from the Authentication Header
     /// into a caller-provided slice of `u64`.
     ///
     /// The Authentication Header's `payload_len` field determines the total length of
@@ -116,94 +109,62 @@ impl AuthHdr {
     /// reads the ICV data in 8-byte (u64) chunks.
     ///
     /// # Safety
-    /// - `header_ptr` must be a valid pointer to the start of an `AuthHdr`
-    ///   structure within the packet data. This function relies on this pointer to
-    ///   access the `payload_len` field and determine the start of the ICV.
-    /// - `packet_end_ptr` must point to the byte *after* the last valid byte
-    ///   of the packet data.
-    /// - The memory region covered by the Authentication Header, including the ICV,
-    ///   as determined by its `payload_len` field (i.e., `(payload_len + 2) * 4` bytes
-    ///   from `header_ptr`), must be valid, accessible, and part of the packet data.
+    /// This method is unsafe because it performs raw pointer arithmetic and memory access.
+    /// The caller must ensure:
+    /// - The AuthHdr instance points to valid memory containing a complete Authentication Header
+    /// - The memory region from the AuthHdr through the end of the ICV is valid and accessible
+    /// - The total length calculated from payload_len does not exceed available memory bounds
     ///
     /// # Arguments
-    /// - `header_ptr`: Pointer to the beginning of the `AuthHdr` (Authentication Header)
-    ///   in the packet.
-    /// - `packet_end_ptr`: Pointer indicating the end of valid packet data.
-    /// - `output_icv_slice`: A mutable slice of `u64` where the parsed ICV will be
+    /// - `icv_buffer`: A mutable slice of `u64` where the parsed ICV will be
     ///   written. Data is read from the packet (assumed to be in network byte order)
-    ///   and converted to `u64` values (host byte order).
+    ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    /// - `Ok(count)`: The number of `u64` elements successfully read from the ICV
-    ///   and written into `output_icv_slice`. This count may be zero if the
-    ///   `payload_len` indicates no ICV is present. It may also be less than the
-    ///   total available ICV data if `output_icv_slice` is too small or if the
-    ///   remaining ICV data is not a multiple of 8 bytes.
-    /// - `Err(AuthHdrError)`: If an error occurs during parsing, such as:
-    ///     - `AuthHdrError::OutOfBounds`: If reading the fixed part of the `AuthHdr`
-    ///       (to access `payload_len`) would go beyond `packet_end_ptr`.
-    ///     - `AuthHdrError::UnexpectedEndOfPacket`: If the total AH length defined by
-    ///       `payload_len` extends beyond `packet_end_ptr`.
+    /// The number of complete u64 words successfully read from the ICV and written
+    /// to `icv_buffer`. This may be:
+    /// - 0 if no ICV data is present (`total_hdr_len` <= `AuthHdr::LEN`)
+    /// - Less than the total available ICV data if:
+    ///   - `icv_buffer` is too small to hold all ICV words
+    ///   - The remaining ICV bytes are not enough for a complete u64 word
+    pub unsafe fn icv_to_slice(
+        &self,
+        icv_buffer: &mut [u64],
+    ) -> usize {
+        let self_ptr: *const AuthHdr = self;
+        let self_ptr_u8: *const u8 = self_ptr as *const u8;
+        let total_hdr_len = self.total_hdr_len();
+        let mut icv_curr_ptr = (self_ptr_u8).add(AuthHdr::LEN);
+        let icv_end_ptr = (self_ptr_u8).add(total_hdr_len);
 
-    pub unsafe fn parse_integrity_check_value_to_u64_slice(
-        header_ptr: *const AuthHdr,
-        packet_end_ptr: *const u8,
-        output_icv_slice: &mut [u64],
-    ) -> Result<usize, AuthHdrError> {
-
-        if (header_ptr as *const u8).add(AuthHdr::LEN) > packet_end_ptr {
-            return Err(AuthHdrError::OutOfBounds);
-        }
-
-        // Read payload_len.
-        let payload_len_ptr = ptr::addr_of!((*header_ptr).payload_len);
-        let payload_len_be = unsafe { ptr::read_unaligned(payload_len_ptr) };
-        let payload_len_val = u8::from_be(payload_len_be) as usize;
-
-        // Calculate total header length and verify against packet boundaries.
-        let total_hdr_len = (payload_len_val + 2) << 2;
-        if (header_ptr as *const u8).add(total_hdr_len) > packet_end_ptr {
-            return Err(AuthHdrError::UnexpectedEndOfPacket);
-        }
-        
         if total_hdr_len <= AuthHdr::LEN {
-            return Ok(0);
+            return 0
         }
 
-        // Determine start and end pointers for ICV data.
-        let mut current_icv_ptr = (header_ptr as *const u8).add(AuthHdr::LEN);
-        let icv_end_ptr = (header_ptr as *const u8).add(total_hdr_len);
-        let mut icv_packed_count: usize = 0;
-        
-        while current_icv_ptr < icv_end_ptr {
-
-            if icv_packed_count >= output_icv_slice.len() {
-                break;
+        let mut icv_words_copied = 0;
+        while icv_curr_ptr < icv_end_ptr && icv_words_copied < icv_buffer.len() {
+            // Check if there are enough bytes remaining in the ICV section for a full u64.
+            if icv_curr_ptr.add(ICV_U64_WORD_SIZE) > icv_end_ptr {
+                break; // Not enough data for a full u64 word.
             }
 
-            // Check if there are enough bytes remaining in the ICV section
-            if current_icv_ptr.add(mem::size_of::<u64>()) > icv_end_ptr {
-                break;
-            }
-            
-            let mut packed_icv_bytes = [0u8; 8];
-
-            // Read 8 bytes from current_icv_ptr into packed_icv_bytes.
+            // Read ICV_U64_WORD_SIZE bytes from current_icv_read_ptr.
+            // Assuming ICV_U64_WORD_SIZE is 8 for u64.
+            let mut icv_word_bytes = [0u8; ICV_U64_WORD_SIZE];
             ptr::copy_nonoverlapping(
-                current_icv_ptr,             // Source pointer from packet data
-                packed_icv_bytes.as_mut_ptr(), // Destination buffer
-                mem::size_of::<u64>()        // Length to copy (8 bytes)
+                icv_curr_ptr,
+                icv_word_bytes.as_mut_ptr(),
+                ICV_U64_WORD_SIZE,
             );
 
-            // Advance current_icv_ptr by the number of bytes read.
-            current_icv_ptr = current_icv_ptr.add(mem::size_of::<u64>());
+            // Convert the bytes into a u64 and store it in the output slice.
+            icv_buffer[icv_words_copied] = u64::from_be_bytes(icv_word_bytes);
 
-            // Convert the 8 bytes into a u64.
-            output_icv_slice[icv_packed_count] = u64::from_be_bytes(packed_icv_bytes);
-            icv_packed_count += 1;
+            // Advance current_icv_read_ptr by the number of bytes read.
+            icv_curr_ptr = icv_curr_ptr.add(ICV_U64_WORD_SIZE);
+            icv_words_copied += 1;
         }
-
-        Ok(icv_packed_count)
+        icv_words_copied
     }
 }
 
@@ -277,7 +238,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_icv_when_payload_len_is_zero() {
+    fn test_extract_icv_when_payload_len_is_zero() {
         const PACKET_SIZE: usize = AuthHdr::LEN; // 12 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             6, 0, // next_hdr, payload_len = 0
@@ -286,54 +247,17 @@ mod tests {
             5, 6, 7, 8, // seq_num
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            auth_hdr.icv_to_slice(&mut output_slice)
         };
-        assert_eq!(result, Ok(0));
+        assert_eq!(result, 0);
     }
 
     #[test]
-    fn test_parse_icv_error_out_of_bounds_on_short_packet() {
-        const PACKET_SIZE: usize = 1; // Packet too short for initial read of payload_len
-        let packet_data: [u8; PACKET_SIZE] = [6];
-
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(AuthHdrError::OutOfBounds));
-    }
-
-    #[test]
-    fn test_parse_icv_error_unexpected_end_of_packet() {
-        const PACKET_SIZE: usize = 12;
-        // payload_len = 3 implies a 20-byte AH header, but packet data is only 12 bytes.
-        let packet_data: [u8; PACKET_SIZE] = [
-            6, 3, // next_hdr, payload_len = 3 (implies (3+2)*4 = 20 bytes total AH)
-            0, 0, // reserved
-            1, 2, 3, 4, // spi
-            5, 6, 7, 8, // seq_num
-        ];
-
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(AuthHdrError::UnexpectedEndOfPacket));
-    }
-
-    #[test]
-    fn test_parse_icv_one_chunk_exact_ah_and_packet_length() {
+    fn test_extract_icv_one_chunk_exact_ah_and_packet_length() {
         const PACKET_SIZE: usize = 20; // AH is 20 bytes, ICV = 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             6, 3, // next_hdr, payload_len = 3 (total AH 20 bytes)
@@ -344,20 +268,19 @@ mod tests {
             0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
         let mut output_slice = [0u64; 1];
 
         let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            auth_hdr.icv_to_slice(&mut output_slice)
         };
-        assert_eq!(result, Ok(1));
+        assert_eq!(result, 1);
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
     }
 
     #[test]
-    fn test_parse_icv_multiple_chunks_exact_ah_and_packet_length() {
+    fn test_extract_icv_multiple_chunks_exact_ah_and_packet_length() {
         const PACKET_SIZE: usize = 28; // AH is 28 bytes, ICV = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
             6, 5, // next_hdr, payload_len = 5 (total AH 28 bytes)
@@ -370,20 +293,19 @@ mod tests {
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
         let mut output_slice = [0u64; 2];
 
         let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            auth_hdr.icv_to_slice(&mut output_slice)
         };
-        assert_eq!(result, Ok(2));
+        assert_eq!(result, 2);
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
         assert_eq!(output_slice[1], u64::from_be_bytes([0x33,0x44,0x55,0x66,0x77,0x88,0x99,0x00]));
     }
 
     #[test]
-    fn test_parse_icv_output_slice_is_too_small() {
+    fn test_extract_icv_output_slice_is_too_small() {
         const PACKET_SIZE: usize = 28; // AH has 16 bytes of ICV (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
             6, 5, // next_hdr, payload_len = 5 (total AH 28 bytes)
@@ -396,14 +318,13 @@ mod tests {
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const AuthHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
+        let auth_hdr = unsafe { &*(packet_data.as_ptr() as *const AuthHdr) };
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe {
-            AuthHdr::parse_integrity_check_value_to_u64_slice(header_ptr, packet_end_ptr, &mut output_slice)
+            auth_hdr.icv_to_slice(&mut output_slice)
         };
-        assert_eq!(result, Ok(1));
+        assert_eq!(result, 1);
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA,0xBB,0xCC,0xDD,0xEE,0xFF,0x11,0x22]));
     }
 }

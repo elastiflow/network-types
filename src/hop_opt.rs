@@ -140,7 +140,6 @@ impl HopOpt{
         let mut options_packed_count: usize = 0;
 
         while current_opt_ptr < hbh_additional_opts_end_ptr {
-
             if options_packed_count >= output_opts_slice.len() {
                 // Consider adding HopOptError for dst slice full
                 break;
