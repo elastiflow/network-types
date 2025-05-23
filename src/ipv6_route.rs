@@ -1,5 +1,5 @@
 use crate::chunk_reader;
-use core::{mem, ptr};
+use core::{mem};
 
 const TYPE_SPECIFIC_CHUNK_LEN: usize = mem::size_of::<u64>();
 
@@ -134,106 +134,6 @@ impl Ipv6Route {
     /// Total Header Length - 4 bytes (for next_hdr, hdr_ext_len, type_, and sgmt_left)
     pub fn total_type_data_len(&self) -> usize { self.total_hdr_len().saturating_sub(4) }
 
-    /// Reads additional type-specific data from an IPv6 Routing header into a caller-provided slice.
-    ///
-    /// The function reads data in 8-byte (u64) chunks from the packet data region
-    /// immediately following the standard `Ipv6Route` header. The total amount of
-    /// additional data to be processed is determined by the `hdr_ext_len` field of
-    /// the `Ipv6Route` header, which specifies the length of the Routing header
-    /// in 8-octet units, not including the first 8 octets.
-    ///
-    /// # Safety
-    /// - `header_ptr` must be a valid pointer to the start of an `Ipv6Route`
-    ///   structure within the packet data. This function will validate its
-    ///   accessibility based on `packet_end_ptr` and `hdr_ext_len`.
-    /// - `packet_end_ptr` must point to the byte *after* the last valid byte
-    ///   of the packet data.
-    /// - The memory region from `header_ptr` up to the total length indicated by
-    ///   `hdr_ext_len` (i.e., `(hdr_ext_len + 1) * 8` bytes) must be valid,
-    ///   accessible, and part of the packet data.
-    ///
-    /// # Arguments
-    /// - `header_ptr`: Pointer to where the `Ipv6Route` header is expected to
-    ///   start in the packet.
-    /// - `packet_end_ptr`: Pointer indicating the end of valid packet data.
-    /// - `output_data_slice`: A mutable slice of `u64` (e.g., from a
-    ///   stack-allocated array) where the additional type-specific data will be
-    ///   written. Data is read from the packet in network byte order (big-endian)
-    ///   and converted to `u64` in host byte order.
-    ///
-    /// # Returns
-    /// - `Ok(count)`: The number of `u64` elements successfully read from the
-    ///   additional data section and written into `output_data_slice`. This count
-    ///   may be less than the total available if `output_data_slice` is too small
-    ///   or if the remaining data is not a multiple of 8 bytes.
-    /// - `Err(Ipv6RouteError)`: If an error occurs, such as:
-    ///     - `Ipv6RouteError::OutOfBounds`: If reading the base `Ipv6Route` header
-    ///       would go beyond `packet_end_ptr`.
-    ///     - `Ipv6RouteError::UnexpectedEndOfPacket`: If the total length defined by
-    ///       `hdr_ext_len` extends beyond `packet_end_ptr`.
-    pub unsafe fn parse_additional_type_data_to_u8_slice(
-        header_ptr: *const Ipv6Route,
-        packet_end_ptr: *const u8,
-        output_data_slice: &mut [u64],
-    ) -> Result<usize, Ipv6RouteError> {
-        // Ensure we can read through the standard struct length
-        if (header_ptr as *const u8).add(mem::size_of::<Ipv6Route>()) > packet_end_ptr { 
-            return Err(Ipv6RouteError::OutOfBounds);
-        }
-
-        // Read hdr_ext_len
-        let num_data_ptr = ptr::addr_of!((*header_ptr).hdr_ext_len);
-        let num_data_be = unsafe {ptr::read_unaligned(num_data_ptr)};
-        let hdr_ext_len_val = u8::from_be(num_data_be);
-
-        if hdr_ext_len_val == 0 {
-            return Ok(0);
-        }
-
-        // Calculate the total Routing header length and verify against packet boundaries.
-        // Add 1 to cover the first octet of the Routing header
-        let total_hdr_len = (hdr_ext_len_val as usize + 1) << 3;
-        if (header_ptr as *const u8).add(total_hdr_len) > packet_end_ptr {
-            return Err(Ipv6RouteError::UnexpectedEndOfPacket);
-        }
-
-        // Determine start and end pointers for "additional" type-specific data
-        let mut current_data_ptr = (header_ptr as *const u8).add(mem::size_of::<Ipv6Route>());
-        let additional_data_end_ptr = (header_ptr as *const u8).add(total_hdr_len);
-        let mut data_packed_count: usize = 0;
-
-        while current_data_ptr < additional_data_end_ptr {
-
-            if data_packed_count >= output_data_slice.len() {
-                // Consider adding Ipv6RouteError for dst slice full
-                break;
-            }
-
-            // Check if there are enough bytes remaining in THIS Rounting header's additional data
-            // to read a full u64 (8 bytes). We must not read beyond additional_data_end_ptr
-            if current_data_ptr.add(mem::size_of::<u64>()) > additional_data_end_ptr {
-                // Consider adding Ipv6RouteError to signal leftover bytes
-                break;
-            }
-
-            let mut packed_data_bytes = [0u8; 8];
-
-            // Read 8 bytes from current_data_ptr into packed_option_bytes.
-            ptr::copy_nonoverlapping(
-                current_data_ptr,           // Source pointer from packet data
-                packed_data_bytes.as_mut_ptr(), // Destination buffer
-                mem::size_of::<u64>(),      // Length to copy (8 bytes)
-            );
-
-            current_data_ptr = current_data_ptr.add(mem::size_of::<u64>());
-
-            // Convert the 8 bytes into a u64
-            output_data_slice[data_packed_count] = u64::from_be_bytes(packed_data_bytes);
-            data_packed_count += 1;
-        }
-
-        Ok(data_packed_count)
-    }
 
     /// Extracts the variable-length type-specific data from the IPv6 Routing header
     /// into a caller-provided slice of `u64`.
@@ -399,248 +299,11 @@ mod tests {
         assert_eq!(header.total_type_data_len(), 2044);
     }
 
-    // --- Tests for parse_additional_type_data_to_u8_slice ---
-
-    #[test]
-    fn test_parse_additional_data_hdr_ext_len_zero() {
-        // A minimal Routing Header with hdr_ext_len = 0
-        // This means the total header length is 8 bytes (Ipv6Route::LEN),
-        // and there's no "additional" data beyond the `type_data` field.
-        let mut header_bytes = [0u8; Ipv6Route::LEN];
-        header_bytes[1] = 0; // hdr_ext_len = 0
-
-        let header_ptr = header_bytes.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { header_bytes.as_ptr().add(header_bytes.len()) };
-        let mut output_slice = [0u64; 10]; // Large enough output slice
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(0), "No additional data expected when hdr_ext_len is 0");
-    }
-
-    #[test]
-    fn test_parse_additional_data_single_u64() {
-        // hdr_ext_len = 1 => total_hdr_len = (1+1)*8 = 16 bytes
-        // Fixed part = 4 bytes, initial type_data = 4 bytes.
-        // So, 16 - 8 (Ipv6Route::LEN) = 8 additional bytes (1 u64).
-        let mut packet_data = [0u8; 16];
-        packet_data[1] = 1; // hdr_ext_len = 1
-        // The first 4 bytes of type-specific data are `type_data` in the struct.
-        // The next 8 bytes are what `parse_additional_type_data_to_u8_slice` should read.
-        packet_data[8..16].copy_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1]; // Expecting one u64
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(1));
-        assert_eq!(output_slice[0], u64::from_be_bytes([0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]));
-    }
-
-    #[test]
-    fn test_parse_additional_data_multiple_u64s() {
-        // hdr_ext_len = 2 => total_hdr_len = (2+1)*8 = 24 bytes
-        // 24 - 8 (Ipv6Route::LEN) = 16 additional bytes (2 u64s).
-        let mut packet_data = [0u8; 24];
-        packet_data[1] = 2; // hdr_ext_len = 2
-        // First 8 bytes of additional data (first u64)
-        packet_data[8..16].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
-        // Second 8 bytes of additional data (second u64)
-        packet_data[16..24].copy_from_slice(&[0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]);
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 2]; // Expecting two u64s
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(2));
-        assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
-        assert_eq!(output_slice[1], u64::from_be_bytes([0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]));
-    }
-
-    #[test]
-    fn test_parse_additional_data_output_slice_too_small() {
-        // hdr_ext_len = 2 => total_hdr_len = 24 bytes (expecting 2 u64s of additional data)
-        let mut packet_data = [0u8; 24];
-        packet_data[1] = 2; // hdr_ext_len = 2
-        packet_data[8..16].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
-        packet_data[16..24].copy_from_slice(&[0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]);
-
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1]; // Output slice too small for all additional data (only 1 u64)
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        // It should read the first u64 and stop because the output slice is full.
-        assert_eq!(result, Ok(1));
-        assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
-    }
-
-    #[test]
-    fn test_parse_additional_data_out_of_bounds_initial_header() {
-        // Packet data is smaller than the fixed Ipv6Route header struct (8 bytes)
-        let packet_data = [0u8; 4]; // Only 4 bytes, cannot even read `type_data` safely.
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Err(Ipv6RouteError::OutOfBounds));
-    }
-
-    #[test]
-    fn test_parse_additional_data_unexpected_end_of_packet() {
-        // hdr_ext_len = 1 => total_hdr_len = 16 bytes.
-        // But packet_data only has 10 bytes in total (8 fixed + 2 additional).
-        // This is less than the required 16 bytes.
-        let mut packet_data = [0u8; 10];
-        packet_data[1] = 1; // hdr_ext_len = 1 (implies 8 additional bytes needed after Ipv6Route::LEN)
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Err(Ipv6RouteError::UnexpectedEndOfPacket));
-    }
-
-    #[test]
-    fn test_parse_additional_data_packet_just_fits() {
-        // hdr_ext_len = 1 => total_hdr_len = 16 bytes
-        // Packet data is exactly 16 bytes
-        let mut packet_data = [0u8; 16];
-        packet_data[1] = 1; // hdr_ext_len = 1
-        packet_data[8..16].copy_from_slice(&[0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]);
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(1));
-        assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00, 0x11]));
-    }
-
-    #[test]
-    fn test_parse_additional_data_hdr_ext_len_max() {
-        // Test with maximum hdr_ext_len = 255
-        // total_hdr_len = (255 + 1) * 8 = 2048 bytes
-        const TOTAL_LEN: usize = 2048;
-        let mut packet_data = [0u8; TOTAL_LEN];
-        packet_data[1] = 255; // hdr_ext_len = 255
-
-        // Fill some data for validation (e.g., last u64)
-        let last_u64_start_idx = TOTAL_LEN - 8;
-        packet_data[last_u64_start_idx..].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
-
-        let header_ptr = packet_data.as_ptr() as *const Ipv6Route;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-
-        // Calculate expected number of additional u64s
-        let expected_additional_bytes = TOTAL_LEN - Ipv6Route::LEN; // 2048 - 8 = 2040
-        let expected_u64_count = expected_additional_bytes / mem::size_of::<u64>(); // 2040 / 8 = 255
-
-        let mut output_slice = [0u64; 255]; // Fixed-size array for max expected u64s
-
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(expected_u64_count));
-        assert_eq!(output_slice[expected_u64_count - 1], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
-    }
-
-
-    #[test]
-    fn test_parse_additional_data_misaligned_header_ptr() {
-        // Simulate header starting 1 byte into raw_packet_data, making it unaligned.
-        // We'll create a buffer larger than needed to allow for the offset.
-        // The total data needed for hdr_ext_len = 1 is 16 bytes.
-        // So, a buffer of 1 (offset) + 16 (header) = 17 bytes minimum.
-        const BUFFER_LEN: usize = 17;
-        let mut raw_packet_data = [0u8; BUFFER_LEN];
-
-        // The effective header starts at raw_packet_data[1]
-        // This is where next_hdr would be, then hdr_ext_len at raw_packet_data[2].
-        // So, `hdr_ext_len` is at `raw_packet_data[1 + 1]`.
-        // The value `1` for hdr_ext_len means total length 16 bytes.
-        // `Ipv6Route::LEN` is 8 bytes.
-        // The `Ipv6Route` struct itself (8 bytes) would span `raw_packet_data[1..9]`.
-        // The additional data would start at `raw_packet_data[1 + Ipv6Route::LEN]` which is `raw_packet_data[9]`.
-        // It needs to read 8 bytes from `raw_packet_data[9..17]`.
-        raw_packet_data[2] = 1; // Set hdr_ext_len = 1
-
-        // Fill additional data starting from `raw_packet_data[9]`
-        raw_packet_data[9..17].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
-
-        let header_ptr = unsafe { raw_packet_data.as_ptr().add(1) as *const Ipv6Route }; // Unaligned pointer
-        let packet_end_ptr = unsafe { raw_packet_data.as_ptr().add(raw_packet_data.len()) };
-        let mut output_slice = [0u64; 1];
-
-        // The current implementation uses `ptr::copy_nonoverlapping` which is safe for unaligned pointers
-        // as long as the memory region itself is valid and bounds are checked.
-        let result = unsafe {
-            Ipv6Route::parse_additional_type_data_to_u8_slice(
-                header_ptr,
-                packet_end_ptr,
-                &mut output_slice,
-            )
-        };
-        assert_eq!(result, Ok(1));
-        assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
-    }
 
     // --- Tests for parse_additional_type_data ---
 
     #[test]
-    fn test_parse_additional_type_data() {
+    fn test_parse_additional_type_data_basic() {
         // Create a header with hdr_ext_len = 2 => total_hdr_len = (2+1)*8 = 24 bytes
         // 24 - 8 (Ipv6Route::LEN) = 16 additional bytes (2 u64s).
         let mut packet_data = [0u8; 24];
@@ -654,7 +317,148 @@ mod tests {
         let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
         let mut output_slice = [0u64; 2]; // Expecting two u64s
 
-        // Call the new function
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results
+        assert_eq!(result, 2);
+        assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
+        assert_eq!(output_slice[1], u64::from_be_bytes([0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]));
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_empty_output_slice() {
+        // Create a header with hdr_ext_len = 1 => total_hdr_len = (1+1)*8 = 16 bytes
+        // 16 - 8 (Ipv6Route::LEN) = 8 additional bytes (1 u64).
+        let mut packet_data = [0u8; 16];
+        packet_data[1] = 1; // hdr_ext_len = 1
+        packet_data[8..16].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+
+        // Get a reference to the header
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 0]; // Empty output slice
+
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results - should return 0 because the output slice is empty
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_output_slice_too_small() {
+        // Create a header with hdr_ext_len = 2 => total_hdr_len = (2+1)*8 = 24 bytes
+        // 24 - 8 (Ipv6Route::LEN) = 16 additional bytes (2 u64s).
+        let mut packet_data = [0u8; 24];
+        packet_data[1] = 2; // hdr_ext_len = 2
+        packet_data[8..16].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        packet_data[16..24].copy_from_slice(&[0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]);
+
+        // Get a reference to the header
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 1]; // Output slice too small (only 1 u64)
+
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results - should return 1 because the output slice can only hold 1 u64
+        assert_eq!(result, 1);
+        assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_zero_additional_data() {
+        // Create a header with hdr_ext_len = 0 => total_hdr_len = (0+1)*8 = 8 bytes
+        // 8 - 8 (Ipv6Route::LEN) = 0 additional bytes.
+        let mut packet_data = [0u8; 8];
+        packet_data[1] = 0; // hdr_ext_len = 0
+
+        // Get a reference to the header
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 1]; // Output slice with room for 1 u64
+
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results - should return 0 because there's no additional data
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_partial_data() {
+        // Create a header with hdr_ext_len = 0 => total_hdr_len = (0+1)*8 = 8 bytes
+        // We'll add 4 bytes of additional data, which is not enough for a complete u64 (8 bytes)
+        let mut packet_data = [0u8; 12];
+        packet_data[1] = 0; // hdr_ext_len = 0 (total header length = 8 bytes)
+        packet_data[8..12].copy_from_slice(&[0x11, 0x22, 0x33, 0x44]); // 4 bytes of additional data
+
+        // Get a reference to the header
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 1]; // Output slice with room for 1 u64
+
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results - should return 0 because there's no additional data
+        // (the function only considers data after the standard header length)
+        assert_eq!(result, 0);
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_max_header_length() {
+        // Test with maximum hdr_ext_len = 255
+        // total_hdr_len = (255 + 1) * 8 = 2048 bytes
+        // We'll create a smaller packet with just a few u64s to test the principle
+        const TOTAL_LEN: usize = 40; // 8 (header) + 32 (4 u64s)
+        let mut packet_data = [0u8; TOTAL_LEN];
+        packet_data[1] = 4; // hdr_ext_len = 4 (enough for 4 u64s)
+
+        // Fill the additional data with recognizable patterns
+        for i in 0..4 {
+            let start = 8 + i * 8;
+            let end = start + 8;
+            let value = (i as u8 + 1) * 0x11;
+            packet_data[start..end].fill(value);
+        }
+
+        // Get a reference to the header
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 4]; // Output slice with room for 4 u64s
+
+        // Call the function
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+
+        // Verify the results
+        assert_eq!(result, 4);
+        for i in 0..4 {
+            let value = (i as u8 + 1) * 0x11;
+            let expected = u64::from_be_bytes([value, value, value, value, value, value, value, value]);
+            assert_eq!(output_slice[i], expected);
+        }
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_misaligned() {
+        // Create a buffer with an offset to simulate misaligned data
+        let mut buffer = [0u8; 32];
+
+        // Place the header at offset 1 to make it misaligned
+        buffer[1] = 0; // next_hdr
+        buffer[2] = 2; // hdr_ext_len = 2 (total_hdr_len = 24 bytes)
+        buffer[3] = 0; // type_
+        buffer[4] = 0; // sgmt_left
+        // type_data (4 bytes) at buffer[5..9]
+        buffer[5..9].fill(0xAA);
+
+        // Additional data (16 bytes = 2 u64s) at buffer[9..25]
+        buffer[9..17].copy_from_slice(&[0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
+        buffer[17..25].copy_from_slice(&[0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]);
+
+        // Get a reference to the header (at offset 1)
+        let header = unsafe { &*(buffer[1..].as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 2]; // Output slice with room for 2 u64s
+
+        // Call the function
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results
