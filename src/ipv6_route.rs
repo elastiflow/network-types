@@ -1,8 +1,6 @@
 use crate::chunk_reader;
 use core::{mem};
 
-const TYPE_SPECIFIC_CHUNK_LEN: usize = mem::size_of::<u64>();
-
 /// IPv6 Routing Extension Header
 #[repr(C, packed)]
 #[derive(Debug, Copy, Clone)]
@@ -14,6 +12,8 @@ pub struct Ipv6Route {
     pub sgmt_left: u8,
     pub type_data: [u8; 4],
 }
+
+const TYPE_SPECIFIC_CHUNK_LEN: usize = mem::size_of::<u64>();
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum RoutingHeaderType {

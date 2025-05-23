@@ -1,4 +1,4 @@
-use core::ptr;
+use crate::chunk_reader;
 /// # Mobility Header Format Section 6.1.1 - https://datatracker.ietf.org/doc/html/rfc3775
 ///
 /// ```text
@@ -40,8 +40,9 @@ pub struct MobilityHdr {
     pub reserved: u8,
     pub checksum: [u8; 2],
     pub msg_data_start: [u8; 2], // Captures last two bytes of standard mobility header length
-    // When header_len is 0, I do not know what is stored here.
 }
+
+const MESSAGE_DATA_CHUNK_LEN: usize = core::mem::size_of::<u64>();
 
 /// Errors that can occur during Mobility Header parsing.
 #[derive(Debug, PartialEq, Eq)]
@@ -130,61 +131,45 @@ impl MobilityHdr {
         self.total_hdr_len().saturating_sub(MobilityHdr::LEN)
     }
 
-    /// Parses the variable length Message Data from the packet data.
-    /// 
+    /// Extracts the variable-length Message Data from the Mobility Header
+    /// into a caller-provided slice of `u64`.
+    ///
+    /// The Mobility Header's `header_len` field determines the total length of
+    /// the Mobility header, from which the length of the Message Data is derived. The Message Data is the
+    /// data that follows the fixed part of the Mobility Header. This function
+    /// reads the Message Data in 8-byte (u64) chunks.
+    ///
+    /// # Safety
+    /// This method is unsafe because it performs raw pointer arithmetic and memory access.
+    /// The caller must ensure:
+    /// - The MobilityHdr instance points to valid memory containing a complete Mobility Header
+    /// - The memory region from the MobilityHdr through the end of the Message Data is valid and accessible
+    /// - The total length calculated from header_len does not exceed available memory bounds
+    ///
     /// # Arguments
-    /// 
-    /// * `header_ptr` - Pointer to the Mobility Header in the packet data.
-    /// * `packet_end_ptr` - Pointer to the end of the packet data.
-    /// * `output_data_slice` - Slice to store the parsed Message Data.
-    /// 
+    /// - `message_data_buffer`: A mutable slice of `u64` where the parsed Message Data will be
+    ///   written. Data is read from the packet (assumed to be in network byte order)
+    ///   and converted to `u64` values in host byte order.
+    ///
     /// # Returns
-    /// 
-    /// * `Ok(usize)` - The number of bytes parsed from the Message Data.
-    /// * `Err(MobilityHdrError)` - An error occurred during parsing.
-    pub unsafe fn parse_message_data(
-        header_ptr: *const MobilityHdr,
-        packet_end_ptr: *const u8,
-        output_data_slice: &mut [u8],
-    ) -> Result<usize, MobilityHdrError> {
-        // Ensure we can read header_len.
-        if (header_ptr as *const u8).add(MobilityHdr::LEN) > packet_end_ptr {
-            return Err(MobilityHdrError::OutOfBounds);
-        }
+    /// The number of complete u64 words successfully read from the Message Data and written
+    /// to `message_data_buffer`. This may be:
+    /// - 0 if no Message Data is present (`total_hdr_len` <= `MobilityHdr::LEN`)
+    /// - Less than the total available Message Data if:
+    ///   - `message_data_buffer` is too small to hold all Message Data words
+    ///   - The remaining Message Data bytes are not enough for a complete u64 word
+    pub unsafe fn message_data_buffer(&self, message_data_buffer: &mut [u64]) -> usize {
+        let self_ptr: *const MobilityHdr = self;
+        let self_ptr_u8: *const u8 = self_ptr as *const u8;
+        let total_hdr_len = self.total_hdr_len();
+        let start_data_ptr = (self_ptr_u8).add(MobilityHdr::LEN);
+        let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
 
-        // Read header_len.
-        let header_len_ptr = ptr::addr_of!((*header_ptr).header_len);
-        let header_len_be = unsafe { ptr::read_unaligned(header_len_ptr) };
-        let header_len_val = u8::from_be(header_len_be) as usize;
-
-        // Calculate total header length and verify against packet boundaries.
-        let total_hdr_len = 8 + (header_len_val << 3);
-        if (header_ptr as *const u8).add(total_hdr_len) > packet_end_ptr {
-            return Err(MobilityHdrError::UnexpectedEndOfPacket);
-        }
-
-        // If total_hdr_len is equal to MobilityHdr::LEN, there is no Message Data.
         if total_hdr_len <= MobilityHdr::LEN {
-            return Ok(0);
+            return 0;
         }
-
-        // Determine start and end pointers for Message Data.
-        // Start after the first 8 bytes of the mobility header struct
-        let message_data_start_ptr = (header_ptr as *const u8).add(MobilityHdr::LEN);
-        let message_data_end_ptr = (header_ptr as *const u8).add(total_hdr_len);
-        let message_data_len = message_data_end_ptr.offset_from(message_data_start_ptr) as usize;
-
-        // Determine how many bytes we can copy (minimum of available data and output slice size).
-        let bytes_to_copy = message_data_len.min(output_data_slice.len());
-
-        // Copy the Message Data to the output slice.
-        ptr::copy_nonoverlapping(
-            message_data_start_ptr,
-            output_data_slice.as_mut_ptr(),
-            bytes_to_copy
-        );
-
-        Ok(bytes_to_copy)
+        
+        chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, message_data_buffer, MESSAGE_DATA_CHUNK_LEN)
     }
 }
 
@@ -263,7 +248,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_message_data_when_header_len_is_zero() {
+    fn test_message_data_buffer_when_header_len_is_zero() {
         const PACKET_SIZE: usize = MobilityHdr::LEN; // 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             6, 0, // payload_proto, header_len = 0
@@ -272,55 +257,15 @@ mod tests {
             0x56, 0x78, // msg_data_start
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const MobilityHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u8; 8];
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 1];
 
-        let result = unsafe {
-            MobilityHdr::parse_message_data(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Ok(0));
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        assert_eq!(result, 0);
     }
 
     #[test]
-    fn test_parse_message_data_error_out_of_bounds_on_short_packet() {
-        const PACKET_SIZE: usize = 1; // Packet too short for initial read of header_len
-        let packet_data: [u8; PACKET_SIZE] = [6];
-
-        let header_ptr = packet_data.as_ptr() as *const MobilityHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u8; 8];
-
-        let result = unsafe {
-            MobilityHdr::parse_message_data(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(MobilityHdrError::OutOfBounds));
-    }
-
-    #[test]
-    fn test_parse_message_data_error_unexpected_end_of_packet() {
-        const PACKET_SIZE: usize = 8;
-        // header_len = 1 implies a 16-byte Mobility Header, but packet data is only 8 bytes.
-        let packet_data: [u8; PACKET_SIZE] = [
-            6, 1, // payload_proto, header_len = 1 (implies 8 + (1*8) = 16 bytes total)
-            5, 0, // mh_type, reserved
-            0x12, 0x34, // checksum
-            0x56, 0x78, // msg_data_start
-            // Missing 8 bytes of message data
-        ];
-
-        let header_ptr = packet_data.as_ptr() as *const MobilityHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u8; 8];
-
-        let result = unsafe {
-            MobilityHdr::parse_message_data(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Err(MobilityHdrError::UnexpectedEndOfPacket));
-    }
-
-    #[test]
-    fn test_parse_message_data_exact_header_and_packet_length() {
+    fn test_message_data_buffer_one_chunk_exact_mobility_and_packet_length() {
         const PACKET_SIZE: usize = 16; // Mobility Header is 16 bytes, Message Data = 8 bytes
         let packet_data: [u8; PACKET_SIZE] = [
             6, 1, // payload_proto, header_len = 1 (total 16 bytes)
@@ -331,38 +276,90 @@ mod tests {
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const MobilityHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u8; 8];
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 1];
 
-        let result = unsafe {
-            MobilityHdr::parse_message_data(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Ok(8));
-        assert_eq!(output_slice, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        assert_eq!(result, 1);
+        let expected_u64 = u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
+        assert_eq!(output_slice[0], expected_u64);
     }
 
     #[test]
-    fn test_parse_message_data_output_slice_is_too_small() {
-        const PACKET_SIZE: usize = 24; // Mobility Header has 16 bytes of Message Data
+    fn test_message_data_buffer_multiple_chunks_exact_mobility_and_packet_length() {
+        const PACKET_SIZE: usize = 24; // Mobility Header is 24 bytes, Message Data = 16 bytes (2 chunks)
         let packet_data: [u8; PACKET_SIZE] = [
             6, 2, // payload_proto, header_len = 2 (total 24 bytes)
             5, 0, // mh_type, reserved
             0x12, 0x34, // checksum
             0x56, 0x78, // msg_data_start
-            // Message Data (16 bytes)
+            // Message Data Chunk 1
             0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+            // Message Data Chunk 2
             0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
         ];
 
-        let header_ptr = packet_data.as_ptr() as *const MobilityHdr;
-        let packet_end_ptr = unsafe { packet_data.as_ptr().add(packet_data.len()) };
-        let mut output_slice = [0u8; 8]; // Only space for 8 bytes.
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 2];
 
-        let result = unsafe {
-            MobilityHdr::parse_message_data(header_ptr, packet_end_ptr, &mut output_slice)
-        };
-        assert_eq!(result, Ok(8));
-        assert_eq!(output_slice, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        assert_eq!(result, 2);
+        assert_eq!(
+            output_slice[0],
+            u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+        );
+        assert_eq!(
+            output_slice[1],
+            u64::from_be_bytes([0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00])
+        );
+    }
+
+    #[test]
+    fn test_message_data_buffer_output_slice_is_too_small() {
+        const PACKET_SIZE: usize = 24; // Mobility Header has 16 bytes of Message Data (2 chunks)
+        let packet_data: [u8; PACKET_SIZE] = [
+            6, 2, // payload_proto, header_len = 2 (total 24 bytes)
+            5, 0, // mh_type, reserved
+            0x12, 0x34, // checksum
+            0x56, 0x78, // msg_data_start
+            // Message Data Chunk 1
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+            // Message Data Chunk 2
+            0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00,
+        ];
+
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 1]; // Only space for one u64.
+
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        assert_eq!(result, 1);
+        assert_eq!(
+            output_slice[0],
+            u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+        );
+    }
+
+    #[test]
+    fn test_message_data_buffer_with_incomplete_chunk() {
+        const PACKET_SIZE: usize = 20; // Mobility Header is 20 bytes, Message Data = 12 bytes (1 complete chunk + 4 bytes)
+        let packet_data: [u8; PACKET_SIZE] = [
+            6, 1, // payload_proto, header_len = 1 (total 16 bytes)
+            5, 0, // mh_type, reserved
+            0x12, 0x34, // checksum
+            0x56, 0x78, // msg_data_start
+            // Message Data (12 bytes)
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22, // Complete chunk
+            0x33, 0x44, 0x55, 0x66, // Incomplete chunk (only 4 bytes)
+        ];
+
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 2]; // Space for two u64s.
+
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        assert_eq!(result, 1); // Only one complete chunk should be read
+        assert_eq!(
+            output_slice[0],
+            u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
+        );
     }
 }
