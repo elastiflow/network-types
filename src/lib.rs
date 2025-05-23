@@ -4,6 +4,7 @@
 pub mod ah;
 pub mod arp;
 pub mod bitfield;
+mod chunk_reader;
 pub mod esp;
 pub mod eth;
 pub mod fragment;
@@ -16,11 +17,13 @@ pub mod ipv6_ext;
 pub mod ipv6_route;
 pub mod mac;
 pub mod mobility;
+pub mod shim6;
 pub mod tcp;
 pub mod udp;
 pub mod vlan;
 pub mod vxlan;
-mod chunk_reader;
+
+
 
 
 

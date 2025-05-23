@@ -11,7 +11,7 @@ pub(crate) unsafe fn read_u64_chunks(
 
     while current_ptr < end_ptr && count < buffer.len() {
         if current_ptr.add(chunk_len) > end_ptr {
-            break; // Not enough data for a full u64 word.
+            break; // Not enough data for a full word.
         }
 
         let mut block_bytes = [0u8; 8]; // u64 is 8 bytes

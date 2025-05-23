@@ -77,7 +77,7 @@ pub struct HipHdr {
     /// Next Header field (8 bits)
     pub next_hdr: u8,
     /// Header Length field (8 bits)
-    pub header_length: u8,
+    pub hdr_len: u8,
     /// Fixed bit (1 bit) + Packet Type (7 bits)
     pub packet_type_field: u8,
     /// Version (4 bits) + Reserved (3 bits) + Fixed bit (1 bit)
@@ -113,14 +113,14 @@ impl HipHdr {
 
     /// Gets the Header Length value.
     #[inline]
-    pub fn header_length(&self) -> u8 {
-        self.header_length
+    pub fn hdr_len(&self) -> u8 {
+        self.hdr_len
     }
 
     /// Sets the Header Length value.
     #[inline]
-    pub fn set_header_length(&mut self, val: u8) {
-        self.header_length = val;
+    pub fn set_hdr_len(&mut self, val: u8) {
+        self.hdr_len = val;
     }
 
     /// Gets the Packet Type value (7 bits).
@@ -221,7 +221,7 @@ impl HipHdr {
     /// Calculates the total length of the HIP packet in bytes.
     #[inline]
     pub fn total_length(&self) -> usize {
-        ((self.header_length as usize) + 1) * 8
+        ((self.hdr_len as usize) + 1) * 8
     }
 
     /// Calculates the length of the HIP Parameters area in bytes.
@@ -346,9 +346,9 @@ mod tests {
         hip_hdr.set_next_hdr(59);
         assert_eq!(hip_hdr.next_hdr(), 59);
 
-        // Test header_length
-        hip_hdr.set_header_length(4);
-        assert_eq!(hip_hdr.header_length(), 4);
+        // Test hdr_len
+        hip_hdr.set_hdr_len(4);
+        assert_eq!(hip_hdr.hdr_len(), 4);
 
         // Test packet_type
         hip_hdr.set_packet_type(0x12);
@@ -387,13 +387,13 @@ mod tests {
         let mut packet_buf = [0u8; BUF_SIZE];
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_buf) };
 
-        // Test with header_length = 4 (minimum value)
-        hip_hdr.set_header_length(4);
+        // Test with hdr_len = 4 (minimum value)
+        hip_hdr.set_hdr_len(4);
         assert_eq!(hip_hdr.total_length(), 40); // (4 + 1) * 8 = 40
         assert_eq!(hip_hdr.params_length(), 0); // 40 - 40 = 0
 
-        // Test with header_length = 5
-        hip_hdr.set_header_length(5);
+        // Test with hdr_len = 5
+        hip_hdr.set_hdr_len(5);
         assert_eq!(hip_hdr.total_length(), 48); // (5 + 1) * 8 = 48
         assert_eq!(hip_hdr.params_length(), 8); // 48 - 40 = 8
     }
@@ -408,7 +408,7 @@ mod tests {
         // Set up the HIP header
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_data) };
         hip_hdr.set_next_hdr(59);
-        hip_hdr.set_header_length(8); // (72 bytes total - 8 bytes header) / 8 = 8
+        hip_hdr.set_hdr_len(8); // (72 bytes total - 8 bytes header) / 8 = 8
         hip_hdr.set_packet_type(0x10);
         hip_hdr.set_version(2);
         hip_hdr.set_fixed_bit2(true);
@@ -473,7 +473,7 @@ mod tests {
         // Set up the HIP header
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_data) };
         hip_hdr.set_next_hdr(59);
-        hip_hdr.set_header_length(8); // (72 bytes total - 8 bytes header) / 8 = 8
+        hip_hdr.set_hdr_len(8); // (72 bytes total - 8 bytes header) / 8 = 8
         hip_hdr.set_packet_type(0x10);
         hip_hdr.set_version(2);
         hip_hdr.set_fixed_bit2(true);
@@ -536,7 +536,7 @@ mod tests {
         // Set up the HIP header
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_data) };
         hip_hdr.set_next_hdr(59);
-        hip_hdr.set_header_length(7); // (64 bytes total - 8 bytes header) / 8 = 7
+        hip_hdr.set_hdr_len(7); // (64 bytes total - 8 bytes header) / 8 = 7
         hip_hdr.set_packet_type(0x10);
         hip_hdr.set_version(2);
         hip_hdr.set_fixed_bit2(true);
@@ -587,7 +587,7 @@ mod tests {
         // Set up the HIP header
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_data) };
         hip_hdr.set_next_hdr(59);
-        hip_hdr.set_header_length(6); // (56 bytes total - 8 bytes header) / 8 = 6
+        hip_hdr.set_hdr_len(6); // (56 bytes total - 8 bytes header) / 8 = 6
         hip_hdr.set_packet_type(0x10);
         hip_hdr.set_version(2);
         hip_hdr.set_fixed_bit2(true);
