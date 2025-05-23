@@ -156,13 +156,17 @@ impl Ipv6Route {
     ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    /// The number of complete u64 words successfully read from the type-specific data and written
-    /// to `output_data_slice`. This may be:
-    /// - 0 if no type-specific data is present beyond the fixed header
-    /// - Less than the total available type-specific data if:
-    ///   - `output_data_slice` is too small to hold all data words
-    ///   - The remaining type-specific data bytes are not enough for a complete u64 word
-    pub unsafe fn parse_additional_type_data(&self, output_data_slice: &mut [u64]) -> usize {
+    /// A Result containing:
+    /// - Ok(usize): The number of complete u64 words successfully read from the type-specific data and written
+    ///   to `output_data_slice`. This may be:
+    ///   - 0 if no type-specific data is present beyond the fixed header
+    ///   - Less than the total available type-specific data if:
+    ///     - `output_data_slice` is too small to hold all data words
+    ///     - The remaining type-specific data bytes are not enough for a complete u64 word
+    /// - Err(ChunkReaderError): If an error occurred during reading, such as:
+    ///   - UnexpectedEndOfPacket: If the packet data ends unexpectedly
+    ///   - InvalidChunkLength: If the chunk length is not equal to the size of u64
+    pub unsafe fn parse_additional_type_data(&self, output_data_slice: &mut [u64]) -> Result<usize, chunk_reader::ChunkReaderError> {
         let self_ptr: *const Ipv6Route = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
@@ -170,7 +174,7 @@ impl Ipv6Route {
         let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
 
         if total_hdr_len <= Ipv6Route::LEN {
-            return 0;
+            return Ok(0);
         }
 
         chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, output_data_slice, TYPE_SPECIFIC_CHUNK_LEN)
@@ -321,7 +325,7 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
         assert_eq!(output_slice[1], u64::from_be_bytes([0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]));
     }
@@ -342,7 +346,7 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results - should return 0 because the output slice is empty
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -362,7 +366,7 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results - should return 1 because the output slice can only hold 1 u64
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
     }
 
@@ -381,7 +385,7 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results - should return 0 because there's no additional data
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -401,7 +405,7 @@ mod tests {
 
         // Verify the results - should return 0 because there's no additional data
         // (the function only considers data after the standard header length)
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -429,7 +433,7 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results
-        assert_eq!(result, 4);
+        assert_eq!(result, Ok(4));
         for i in 0..4 {
             let value = (i as u8 + 1) * 0x11;
             let expected = u64::from_be_bytes([value, value, value, value, value, value, value, value]);
@@ -462,8 +466,34 @@ mod tests {
         let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
 
         // Verify the results
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(output_slice[0], u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]));
         assert_eq!(output_slice[1], u64::from_be_bytes([0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00]));
+    }
+
+    #[test]
+    fn test_parse_additional_type_data_unexpected_end_of_packet() {
+        // Create a header with hdr_ext_len = 1 (total 16 bytes) but only provide 12 bytes
+        // This should cause an UnexpectedEndOfPacket error
+        const PACKET_SIZE: usize = 12; // IPv6 Route should be 16 bytes but we only provide 12
+        let packet_data: [u8; PACKET_SIZE] = [
+            59, 1, // next_hdr, hdr_ext_len = 1 (total IPv6 Route 16 bytes)
+            0, 0, // type_, sgmt_left
+            0, 0, 0, 0, // type_data
+            // Only 4 bytes of the expected 8 bytes of additional type-specific data
+            0x11, 0x22, 0x33, 0x44,
+        ];
+
+        let header = unsafe { &*(packet_data.as_ptr() as *const Ipv6Route) };
+        let mut output_slice = [0u64; 1];
+
+        let result = unsafe { header.parse_additional_type_data(&mut output_slice) };
+        match result {
+            Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => {
+                assert_eq!(bytes_read, 0);
+                assert_eq!(count, 0);
+            }
+            _ => panic!("Expected UnexpectedEndOfPacket error, got {:?}", result),
+        }
     }
 }

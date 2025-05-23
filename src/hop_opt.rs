@@ -18,15 +18,6 @@ pub struct HopOptHdr {
     pub opt_data: [u8; 6], // These 6 octets options are always present
 }
 
-/// Errors that can occur during Hop-by-Hop option parsing.
-#[derive(Debug, PartialEq, Eq)]
-pub enum HopOptError {
-    /// Packet data ended unexpectedly, or a declared length exceeds packet boundaries.
-    OutOfBounds,
-    /// The Hop-by-Hop header indicates a length that extends beyond the provided packet data.
-    UnexpectedEndOfPacket,
-}
-
 const HOP_OPT_CHUNK_LEN: usize = mem::size_of::<u64>();
 
 impl HopOptHdr {
@@ -93,20 +84,24 @@ impl HopOptHdr {
     ///   and converted to `u64` values (host byte order).
     ///
     /// # Returns
-    /// The number of complete u64 words successfully read from the additional options
-    /// and written to `opt_buffer`. This may be:
-    /// - 0 if no additional options data is present (`total_hdr_len` <= `HopOptHdr::LEN`)
-    /// - Less than the total available additional options data if:
-    ///   - `opt_buffer` is too small to hold all additional options words
-    ///   - The remaining additional options bytes are not enough for a complete u64 word
-    pub unsafe fn opt_buffer(&self, opt_buffer: &mut [u64]) -> usize {
+    /// A Result containing:
+    /// - Ok(usize): The number of complete u64 words successfully read from the additional options
+    ///   and written to `opt_buffer`. This may be:
+    ///   - 0 if no additional options data is present (`total_hdr_len` <= `HopOptHdr::LEN`)
+    ///   - Less than the total available additional options data if:
+    ///     - `opt_buffer` is too small to hold all additional options words
+    ///     - The remaining additional options bytes are not enough for a complete u64 word
+    /// - Err(ChunkReaderError): If an error occurred during reading, such as:
+    ///   - UnexpectedEndOfPacket: If the packet data ends unexpectedly
+    ///   - InvalidChunkLength: If the chunk length is not equal to the size of u64
+    pub unsafe fn opt_buffer(&self, opt_buffer: &mut [u64]) -> Result<usize, chunk_reader::ChunkReaderError> {
         let self_ptr: *const HopOptHdr = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
         let start_data_ptr = (self_ptr_u8).add(HopOptHdr::LEN);
         let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
         if total_hdr_len <= HopOptHdr::LEN {
-            return 0;
+            return Ok(0);
         }
 
         chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, opt_buffer, HOP_OPT_CHUNK_LEN)
@@ -182,7 +177,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     // This test is no longer needed as the function now takes &self and doesn't check for out of bounds
@@ -203,7 +198,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
     }
@@ -223,7 +218,7 @@ mod tests {
         let mut output_slice = [0u64; 2];
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
@@ -247,7 +242,7 @@ mod tests {
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
@@ -265,7 +260,7 @@ mod tests {
         let mut output_slice = [0u64; 0]; // Empty output slice.
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -295,7 +290,7 @@ mod tests {
         // Loop Iteration 2:
         //    current_opt_ptr (16) < opts_end_ptr (16) is false. Loop terminates.
         assert_eq!(
-            result, 1,
+            result, Ok(1),
             "Should read only one chunk defined by HBH header, ignoring further packet data"
         );
         assert_eq!(
@@ -329,10 +324,36 @@ mod tests {
         let mut output_slice = [0u64; 1]; // Expect one u64
 
         let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
-        assert_eq!(result, 1); // Reads the full 8 additional bytes.
+        assert_eq!(result, Ok(1)); // Reads the full 8 additional bytes.
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([1, 2, 3, 4, 5, 6, 7, 8])
         );
+    }
+
+    #[test]
+    fn parse_additional_unexpected_end_of_packet() {
+        // Create a packet with hdr_ext_len = 1 (total 16 bytes) but only provide 12 bytes
+        // This should cause an UnexpectedEndOfPacket error
+        const PACKET_SIZE: usize = 12; // HBH should be 16 bytes but we only provide 12
+        let packet_data: [u8; PACKET_SIZE] = [
+            59, 1, // next_hdr, hdr_ext_len = 1 (total HBH 16 bytes)
+            0, 0, 0, 0, 0, 0, // opt_data
+            // Only 4 bytes of the expected 8 bytes of additional options
+            0x11, 0x22, 0x33, 0x44, // next packet 0x55, 0x66 
+        ];
+        
+
+        let hop_opt_hdr = unsafe { &*(packet_data.as_ptr() as *const HopOptHdr) };
+        let mut output_slice = [0u64; 1];
+
+        let result = unsafe { hop_opt_hdr.opt_buffer(&mut output_slice) };
+        match result {
+            Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => {
+                assert_eq!(bytes_read, 0);
+                assert_eq!(count, 0);
+            }
+            _ => panic!("Expected UnexpectedEndOfPacket error, got {:?}", result),
+        }
     }
 }

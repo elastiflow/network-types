@@ -67,6 +67,8 @@
 /// * **HIP Parameters (variable length)**: A variable-length field containing various HIP parameters that provide additional information or data specific to the `Packet Type`.
 
 use core::mem;
+use crate::chunk_reader;
+use crate::chunk_reader::ChunkReaderError;
 use crate::hip_param::{HipParamTlv};
 
 /// HIP version 2 protocol header structure
@@ -300,7 +302,11 @@ impl HipHdr {
 
             // Parse the parameter contents into the output slice
             let remaining_slice = &mut output_slice[total_u64_count..];
-            let u64_count = param_tlv.contents_buffer(remaining_slice);
+            let u64_count = match param_tlv.contents_buffer(remaining_slice) {
+                Ok(count) => count,
+                Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => return count, // Return current count if an error occurs
+                Err(chunk_reader::ChunkReaderError::InvalidChunkLength {expected, found}) => return total_u64_count,
+            };
 
             // Update the total count of u64 values parsed
             total_u64_count += u64_count;
@@ -395,7 +401,7 @@ mod tests {
         // Set up the HIP header
         let hip_hdr = unsafe { get_mut_hiphdr_ref_from_array(&mut packet_data) };
         hip_hdr.set_next_hdr(59);
-        hip_hdr.set_hdr_len(8); // (72 bytes total - 8 bytes header) / 8 = 8
+        hip_hdr.set_hdr_len(6); // 4 octets default value + 2 additional octets
         hip_hdr.set_packet_type(0x10);
         hip_hdr.set_version(2);
         hip_hdr.set_fixed_bit2(true);
@@ -409,13 +415,13 @@ mod tests {
 
             // Set content bytes (8 bytes)
             let content_ptr = packet_data.as_mut_ptr().add(param1_offset + HipParamTlv::LEN);
-            for i in 0..8 {
+            for i in 0..12 { // 12 to account for 4 bytes of padding
                 *content_ptr.add(i) = (i + 1) as u8;
             }
         }
 
         // Set up the second parameter at offset 56 (40 + 16)
-        let param2_offset = param1_offset + 16;
+        let param2_offset = param1_offset + 20; // 20 to account for 4 bytes of padding + 16 param1
         let param2_ptr = unsafe { packet_data.as_mut_ptr().add(param2_offset) as *mut HipParamTlv };
         unsafe {
             (*param2_ptr).type_ = [0x00, 0x02]; // Type 2
@@ -423,8 +429,8 @@ mod tests {
 
             // Set content bytes (8 bytes)
             let content_ptr = packet_data.as_mut_ptr().add(param2_offset + HipParamTlv::LEN);
-            for i in 0..8 {
-                *content_ptr.add(i) = (i + 9) as u8;
+            for i in 0..12 { // 12 to account for 4 bytes of padding
+                *content_ptr.add(i) = (i + 13) as u8;
             }
         }
 

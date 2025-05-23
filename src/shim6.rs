@@ -216,13 +216,17 @@ impl Shim6Hdr {
     ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    /// The number of complete u64 words successfully read from the Type-specific format data and written
-    /// to `buffer`. This may be:
-    /// - 0 if no Type-specific format data is present (`total_hdr_len` <= `Shim6Hdr::LEN`)
-    /// - Less than the total available Type-specific format data if:
-    ///   - `buffer` is too small to hold all Type-specific format data words
-    ///   - The remaining Type-specific format data bytes are not enough for a complete u64 word
-    pub unsafe fn type_specific_buffer(&self, buffer: &mut [u64]) -> usize {
+    /// A Result containing:
+    /// - Ok(usize): The number of complete u64 words successfully read from the Type-specific format data and written
+    ///   to `buffer`. This may be:
+    ///   - 0 if no Type-specific format data is present (`total_hdr_len` <= `Shim6Hdr::LEN`)
+    ///   - Less than the total available Type-specific format data if:
+    ///     - `buffer` is too small to hold all Type-specific format data words
+    ///     - The remaining Type-specific format data bytes are not enough for a complete u64 word
+    /// - Err(ChunkReaderError): If an error occurred during reading, such as:
+    ///   - UnexpectedEndOfPacket: If the packet data ends unexpectedly
+    ///   - InvalidChunkLength: If the chunk length is not equal to the size of u64
+    pub unsafe fn type_specific_buffer(&self, buffer: &mut [u64]) -> Result<usize, chunk_reader::ChunkReaderError> {
         let self_ptr: *const Shim6Hdr = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
@@ -230,7 +234,7 @@ impl Shim6Hdr {
         let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
 
         if total_hdr_len <= Shim6Hdr::LEN {
-            return 0;
+            return Ok(0);
         }
 
         chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, buffer, TYPE_SPECIFIC_CHUNK_LEN)
@@ -348,7 +352,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { shim6_hdr.type_specific_buffer(&mut output_slice) };
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -367,7 +371,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { shim6_hdr.type_specific_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
     }
@@ -390,7 +394,7 @@ mod tests {
         let mut output_slice = [0u64; 2];
 
         let result = unsafe { shim6_hdr.type_specific_buffer(&mut output_slice) };
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
@@ -419,10 +423,37 @@ mod tests {
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe { shim6_hdr.type_specific_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
         );
+    }
+
+    #[test]
+    fn test_type_specific_buffer_unexpected_end_of_packet() {
+        // Create a packet with hdr_len = 1 (total 16 bytes) but only provide 12 bytes
+        // This should cause an UnexpectedEndOfPacket error
+        const PACKET_SIZE: usize = 12; // Shim6Hdr should be 16 bytes but we only provide 12
+        let packet_data: [u8; PACKET_SIZE] = [
+            59, 1, // next_hdr, hdr_len = 1 (total 16 bytes)
+            0x40, 0x54, // p_type_ = 64, type_s = 84 (type_specific = 42, s_bit = 0)
+            0xAB, 0xCD, // checksum
+            0, 0, // type_specific
+            // Only 4 bytes of the expected 8 bytes of type-specific data
+            0x11, 0x22, 0x33, 0x44,
+        ];
+
+        let shim6_hdr = unsafe { &*(packet_data.as_ptr() as *const Shim6Hdr) };
+        let mut output_slice = [0u64; 1];
+
+        let result = unsafe { shim6_hdr.type_specific_buffer(&mut output_slice) };
+        match result {
+            Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => {
+                assert_eq!(bytes_read, 0);
+                assert_eq!(count, 0);
+            }
+            _ => panic!("Expected UnexpectedEndOfPacket error, got {:?}", result),
+        }
     }
 }

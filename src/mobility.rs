@@ -152,13 +152,17 @@ impl MobilityHdr {
     ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    /// The number of complete u64 words successfully read from the Message Data and written
-    /// to `message_data_buffer`. This may be:
-    /// - 0 if no Message Data is present (`total_hdr_len` <= `MobilityHdr::LEN`)
-    /// - Less than the total available Message Data if:
-    ///   - `message_data_buffer` is too small to hold all Message Data words
-    ///   - The remaining Message Data bytes are not enough for a complete u64 word
-    pub unsafe fn message_data_buffer(&self, message_data_buffer: &mut [u64]) -> usize {
+    /// A Result containing:
+    /// - Ok(usize): The number of complete u64 words successfully read from the Message Data and written
+    ///   to `message_data_buffer`. This may be:
+    ///   - 0 if no Message Data is present (`total_hdr_len` <= `MobilityHdr::LEN`)
+    ///   - Less than the total available Message Data if:
+    ///     - `message_data_buffer` is too small to hold all Message Data words
+    ///     - The remaining Message Data bytes are not enough for a complete u64 word
+    /// - Err(ChunkReaderError): If an error occurred during reading, such as:
+    ///   - UnexpectedEndOfPacket: If the packet data ends unexpectedly
+    ///   - InvalidChunkLength: If the chunk length is not equal to the size of u64
+    pub unsafe fn message_data_buffer(&self, message_data_buffer: &mut [u64]) -> Result<usize, chunk_reader::ChunkReaderError> {
         let self_ptr: *const MobilityHdr = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let total_hdr_len = self.total_hdr_len();
@@ -166,9 +170,9 @@ impl MobilityHdr {
         let end_data_ptr = (self_ptr_u8).add(total_hdr_len);
 
         if total_hdr_len <= MobilityHdr::LEN {
-            return 0;
+            return Ok(0);
         }
-        
+
         chunk_reader::read_u64_chunks(start_data_ptr, end_data_ptr, message_data_buffer, MESSAGE_DATA_CHUNK_LEN)
     }
 }
@@ -261,7 +265,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -280,7 +284,7 @@ mod tests {
         let mut output_slice = [0u64; 1];
 
         let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         let expected_u64 = u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]);
         assert_eq!(output_slice[0], expected_u64);
     }
@@ -303,7 +307,7 @@ mod tests {
         let mut output_slice = [0u64; 2];
 
         let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
@@ -332,7 +336,7 @@ mod tests {
         let mut output_slice = [0u64; 1]; // Only space for one u64.
 
         let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
@@ -356,10 +360,37 @@ mod tests {
         let mut output_slice = [0u64; 2]; // Space for two u64s.
 
         let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
-        assert_eq!(result, 1); // Only one complete chunk should be read
+        assert_eq!(result, Ok(1)); // Only one complete chunk should be read
         assert_eq!(
             output_slice[0],
             u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22])
         );
+    }
+
+    #[test]
+    fn test_message_data_buffer_unexpected_end_of_packet() {
+        // Create a packet with header_len = 1 (total 16 bytes) but only provide 12 bytes
+        // This should cause an UnexpectedEndOfPacket error
+        const PACKET_SIZE: usize = 12; // Mobility Header should be 16 bytes but we only provide 12
+        let packet_data: [u8; PACKET_SIZE] = [
+            6, 1, // payload_proto, header_len = 1 (total 16 bytes)
+            5, 0, // mh_type, reserved
+            0x12, 0x34, // checksum
+            0x56, 0x78, // msg_data_start
+            // Only 4 bytes of the expected 8 bytes of Message Data
+            0x11, 0x22, 0x33, 0x44,
+        ];
+
+        let mobility_hdr = unsafe { &*(packet_data.as_ptr() as *const MobilityHdr) };
+        let mut output_slice = [0u64; 1];
+
+        let result = unsafe { mobility_hdr.message_data_buffer(&mut output_slice) };
+        match result {
+            Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => {
+                assert_eq!(bytes_read, 0);
+                assert_eq!(count, 0);
+            }
+            _ => panic!("Expected UnexpectedEndOfPacket error, got {:?}", result),
+        }
     }
 }

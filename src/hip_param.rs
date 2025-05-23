@@ -166,21 +166,23 @@ impl HipParamTlv {
     ///   and converted to `u64` values in host byte order.
     ///
     /// # Returns
-    /// The number of complete u64 words successfully read from the Contents and written
-    /// to `contents_buffer`. This may be:
-    /// - 0 if no Contents data is present
-    /// - Less than the total available Contents data if:
-    ///   - `contents_buffer` is too small to hold all Contents words
-    ///   - The remaining Contents bytes are not enough for a complete u64 word
-    pub unsafe fn contents_buffer(&self, contents_buffer: &mut [u64]) -> usize {
+    /// A Result containing:
+    /// - Ok(usize): The number of complete u64 words successfully read from the Contents and written
+    ///   to `contents_buffer`. This may be:
+    ///   - 0 if no Contents data is present
+    ///   - Less than the total available Contents data if `contents_buffer` is too small to hold all Contents words
+    /// - Err(ChunkReaderError): If an error occurred during reading:
+    ///   - UnexpectedEndOfPacket: If the packet data ends unexpectedly before a complete chunk
+    ///   - InvalidChunkLength: If CONTENTS_CHUNK_LEN is not equal to the size of u64
+    pub unsafe fn contents_buffer(&self, contents_buffer: &mut [u64]) -> Result<usize, chunk_reader::ChunkReaderError> {
         let self_ptr: *const HipParamTlv = self;
         let self_ptr_u8: *const u8 = self_ptr as *const u8;
         let content_len = self.total_param_len();
         let start_data_ptr = (self_ptr_u8).add(HipParamTlv::LEN);
         let end_data_ptr = (self_ptr_u8).add(content_len);
 
-        if content_len == 0 {
-            return 0;
+        if self.content_len() == 0 {
+            return Ok(0);
         }
 
         chunk_reader::read_u64_chunks(
@@ -195,6 +197,7 @@ impl HipParamTlv {
 
 #[cfg(test)]
 mod tests {
+    use crate::hip_param::HipParamError::UnexpectedEndOfPacket;
     use super::*;
 
     // Helper to create a mutable HipParamTlv reference from a mutable byte array
@@ -262,7 +265,7 @@ mod tests {
         let result = unsafe {
             hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, 0);
+        assert_eq!(result, Ok(0));
     }
 
     #[test]
@@ -284,7 +287,7 @@ mod tests {
         let result = unsafe {
             hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, 1);
+        assert_eq!(result, Ok(1));
         let expected_u64 = u64::from_be_bytes([0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88]);
         assert_eq!(output_slice[0], expected_u64);
     }
@@ -310,7 +313,7 @@ mod tests {
         let result = unsafe {
             hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, 2);
+        assert_eq!(result, Ok(2));
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
         assert_eq!(output_slice[1], u64::from_be_bytes([0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00]));
     }
@@ -336,7 +339,7 @@ mod tests {
         let result = unsafe {
             hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, 1); // Should only parse 1 chunk
+        assert_eq!(result, Ok(1)); // Should only parse 1 chunk
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
     }
 
@@ -358,7 +361,38 @@ mod tests {
         let result = unsafe {
             hip_param.contents_buffer(&mut output_slice)
         };
-        assert_eq!(result, 1); // Should only parse 1 complete chunk (8 bytes)
+        assert_eq!(result, Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read: 8, count: 1 })); // Should only parse 1 complete chunk (8 bytes)
         assert_eq!(output_slice[0], u64::from_be_bytes([0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22]));
+    }
+
+    #[test]
+    fn test_contents_buffer_unexpected_end_of_packet() {
+        // Create a packet with len = 16 (total param 24 bytes) but actual size is only 12 bytes
+        // This will cause an UnexpectedEndOfPacket error when trying to read the second chunk
+        const PACKET_SIZE: usize = 12; // Only enough data for header + 1 chunk
+        let packet_data: [u8; PACKET_SIZE] = [
+            0x12, 0x34, // type_ (param_type = 0x1234, critical = false)
+            0x00, 0x10, // len = 16 (total param 24 bytes, but we only have 12)
+            // Content Chunk 1 (only one chunk available)
+            0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+            // Content Chunk 2 is missing but would be needed based on len
+            // Padding is also missing
+        ];
+
+        let hip_param = unsafe { &*(packet_data.as_ptr() as *const HipParamTlv) };
+        let mut output_slice = [0u64; 2]; // Space for two u64s
+
+        let result = unsafe {
+            hip_param.contents_buffer(&mut output_slice)
+        };
+
+        // Expect UnexpectedEndOfPacket error with bytes_read=8 (one chunk) and count=1
+        match result {
+            Err(chunk_reader::ChunkReaderError::UnexpectedEndOfPacket { bytes_read, count }) => {
+                assert_eq!(bytes_read, 8); // 8 bytes (one chunk) were read
+                assert_eq!(count, 1); // Trying to read the second chunk (index 1)
+            }
+            _ => panic!("Expected UnexpectedEndOfPacket error, got {:?}", result),
+        }
     }
 }
