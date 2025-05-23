@@ -221,7 +221,7 @@ impl HipHdr {
     /// Calculates the total length of the HIP packet in bytes.
     #[inline]
     pub fn total_length(&self) -> usize {
-        ((self.hdr_len as usize) + 1) * 8
+        ((self.hdr_len as usize) + 1) << 3
     }
 
     /// Calculates the length of the HIP Parameters area in bytes.
@@ -293,7 +293,7 @@ impl HipHdr {
             if current_param_ptr.add(param_total_len) > params_end_ptr {
                 return total_u64_count;
             }
-            
+
             if total_u64_count >= output_slice.len() {
                 break;
             }
