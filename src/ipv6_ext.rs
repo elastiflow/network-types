@@ -30,7 +30,7 @@ pub enum Ipv6ExtHdrType {
     /// Host Identity Protocol
     HipHdr = 139,
     /// Shim6 Protocol
-    Shim6 = 140,
+    Shim6Hdr = 140,
 }
 
 // Existing implementations:
@@ -40,6 +40,5 @@ pub enum Ipv6ExtHdrType {
 // - mobility.rs: Mobility Header (MobilityHdr)
 // - esp.rs: Encapsulating Security Payload (Esp)
 // - ah.rs: Authentication Header (AuthHdr)
-
-// TODO: Implement the following extension headers:
-// - Shim6 Protocol (Shim6)
+// - shim6.rs: Shim6 Protocol (Shim6Hdr)
+// - hip.rs: HIP Protocol (HipHdr)
