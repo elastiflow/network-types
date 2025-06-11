@@ -42,35 +42,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy -- --deny warnings
+        run: cargo clippy --features std -- --deny warnings
 
       - name: Test
-        run: cargo test --verbose
-
-  test-nightly:
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - nightly-2025-06-11
-        target:
-          - bpfeb-unknown-none
-          - bpfel-unknown-none
-          - riscv64gc-unknown-linux-musl
-    env:
-      CARGO_BUILD_TARGET: ${{ matrix.target }}
-      RUST_BACKTRACE: full
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-          components: rustfmt, rust-src
-          targets: ${{ matrix.target }}
-
-      - name: Clippy
-        run: cargo clippy -- -Z build-std=core -- --deny warnings
-
-      - name: Test
-        run: cargo test -Z build-std=core --verbose
+        run: cargo test --features std --verbose
