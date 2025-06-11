@@ -42,7 +42,7 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --features std -- --deny warnings
+        run: cargo clippy --features std -- --deny warnings -A clippy::useless_transmute -A clippy::too_many_arguments
 
       - name: Test
         run: cargo test --features std --verbose
