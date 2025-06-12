@@ -56,7 +56,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Check formatting
-        if: matrix.rust == 'stable' && matrix.target == 'x86_64-unknown-linux-gnu'
+        if: matrix.rust == 'stable'
         run: cargo fmt --all -- --check
 
       - name: Clippy
