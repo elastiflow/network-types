@@ -60,12 +60,12 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --features std -- --deny warnings -A clippy::useless_transmute -A clippy::too_many_arguments
+        run: cargo clippy -- --deny warnings -A clippy::useless_transmute -A clippy::too_many_arguments
 
       - name: Build tests for cross-targets
         if: contains(matrix.target, 'aarch64') || contains(matrix.target, 'riscv64')
-        run: cargo build --features std --tests --verbose
+        run: cargo build --tests --verbose
 
       - name: Run tests on native target
         if: contains(matrix.target, 'x86_64')
-        run: cargo test --features std --verbose
+        run: cargo test --verbose

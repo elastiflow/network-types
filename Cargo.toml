@@ -9,9 +9,6 @@ repository = "https://github.com/vadorovsky/network-types"
 readme = "README.md"
 edition = "2021"
 
-[features]
-std = []
-
 [dependencies]
 serde = { version = "1", default-features = false, features = ["derive"], optional = true }
 
